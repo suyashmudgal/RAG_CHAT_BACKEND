@@ -1,0 +1,30 @@
+# ── Core ──────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+python-dotenv
+
+# ── LangChain ─────────────────────────────────────────────────────────────
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-chroma
+langchain-groq
+
+# ── Document loaders ──────────────────────────────────────────────────────
+pypdf
+docx2txt
+
+# ── Embeddings (local) ───────────────────────────────────────────────────
+sentence-transformers
+
+# ── Vector DB ─────────────────────────────────────────────────────────────
+chromadb
+
+# ── Authentication ────────────────────────────────────────────────────────
+pyjwt
+bcrypt
+aiosqlite
