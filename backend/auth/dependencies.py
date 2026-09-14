@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import Cookie, HTTPException, status
 
 from auth.database import get_db
 from auth.utils import decode_token
 
+logger = logging.getLogger(__name__)
+
 
 async def get_current_user(token: str | None = Cookie(None)):
     """Extract and validate the JWT from the ``token`` cookie.
 
-    Returns the user row dict, or raises 401.
+    Returns a user dict containing both SQLite fields and ``pg_id``
+    (the PostgreSQL user ID for ownership operations).
+    Raises 401 if not authenticated.
     """
     if not token:
         raise HTTPException(
@@ -53,4 +59,19 @@ async def get_current_user(token: str | None = Cookie(None)):
             detail="User not found",
         )
 
-    return dict(user)
+    user_dict = dict(user)
+
+    # Sync to PostgreSQL and attach pg_id
+    try:
+        from services.user_sync import ensure_pg_user
+
+        pg_user = ensure_pg_user(user_dict)
+        user_dict["pg_id"] = pg_user.id
+    except Exception as exc:
+        logger.error("Failed to sync user to PostgreSQL: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during user sync",
+        )
+
+    return user_dict

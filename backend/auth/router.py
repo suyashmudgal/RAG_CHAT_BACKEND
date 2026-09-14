@@ -7,7 +7,7 @@ import re
 from urllib.parse import quote_plus, urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from auth.database import get_db
@@ -15,9 +15,11 @@ from auth.dependencies import get_current_user
 from auth.models import (
     AuthConfigResponse,
     AuthResponse,
+    ChangePasswordRequest,
     GoogleAuthRequest,
     SignInRequest,
     SignUpRequest,
+    UpdateProfileRequest,
     UserResponse,
 )
 from auth.utils import create_token, hash_password, verify_password
@@ -147,18 +149,201 @@ async def signout(response: Response):
     return {"message": "Signed out successfully"}
 
 
-# ── Current User ────────────────────────────────────────────────────────────
+# ── Current User & Profile Settings ─────────────────────────────────────────
 
 
 @router.get("/me", response_model=UserResponse)
 async def me(user: dict = Depends(get_current_user)):
-    """Return the currently authenticated user."""
+    """Return the currently authenticated user's profile."""
+    is_oauth = str(user.get("password_hash", "")).startswith("oauth:")
+    name = user["name"]
+    email = user["email"]
+    created_at = user["created_at"]
+    user_id = user["id"]
+
+    try:
+        from database.session import SessionLocal
+        from models.database import User as PgUser
+
+        db = SessionLocal()
+        try:
+            pg_user = db.query(PgUser).filter(PgUser.id == user["pg_id"]).first()
+            if pg_user:
+                name = pg_user.name
+                email = pg_user.email
+                if hasattr(pg_user.created_at, "isoformat"):
+                    created_at = pg_user.created_at.isoformat()
+                elif pg_user.created_at:
+                    created_at = str(pg_user.created_at)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Could not refresh user from PostgreSQL: %s", exc)
+
+    return UserResponse(
+        id=user_id,
+        name=name,
+        email=email,
+        created_at=created_at,
+        is_oauth=is_oauth,
+    )
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_profile(
+    request: Request,
+    body: UpdateProfileRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update current authenticated user's profile name.
+
+    Email is strictly read-only; attempts to change email are rejected with 400.
+    Updates both SQLite and PostgreSQL.
+    """
+    # Enforce read-only email: reject if body contains a different email
+    try:
+        raw_json = await request.json()
+        if "email" in raw_json and raw_json["email"].strip().lower() != user["email"].strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email cannot be changed",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    new_name = body.name.strip()
+    if not new_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name cannot be empty",
+        )
+
+    # 1. Update SQLite
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE users SET name = ? WHERE id = ?",
+            (new_name, user["id"]),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # 2. Update PostgreSQL
+    created_at = user["created_at"]
+    try:
+        from database.session import SessionLocal
+        from models.database import User as PgUser
+        from sqlalchemy import func
+
+        pg_session = SessionLocal()
+        try:
+            pg_user = pg_session.query(PgUser).filter(PgUser.id == user["pg_id"]).first()
+            if pg_user:
+                pg_user.name = new_name
+                pg_user.updated_at = func.now()
+                pg_session.commit()
+                if hasattr(pg_user.created_at, "isoformat"):
+                    created_at = pg_user.created_at.isoformat()
+                elif pg_user.created_at:
+                    created_at = str(pg_user.created_at)
+        except Exception:
+            pg_session.rollback()
+            raise
+        finally:
+            pg_session.close()
+    except Exception as exc:
+        logger.error("Failed to update user name in PostgreSQL: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile",
+        ) from exc
+
+    is_oauth = str(user.get("password_hash", "")).startswith("oauth:")
+    logger.info("Updated profile name for user %s to '%s'", user["email"], new_name)
     return UserResponse(
         id=user["id"],
-        name=user["name"],
+        name=new_name,
         email=user["email"],
-        created_at=user["created_at"],
+        created_at=created_at,
+        is_oauth=is_oauth,
     )
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Change password for current authenticated user.
+
+    Verifies current password, hashes new password with bcrypt, and updates both SQLite and PostgreSQL.
+    Rejects password changes for Google OAuth accounts.
+    """
+    pw_hash = user.get("password_hash", "")
+    if str(pw_hash).startswith("oauth:"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password changes are not supported for accounts authenticated via Google OAuth. Please manage your password through Google.",
+        )
+
+    # Verify current password
+    if not verify_password(body.current_password, pw_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect current password",
+        )
+
+    # Validate new password
+    new_pw = body.new_password
+    if len(new_pw.strip()) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be at least 6 characters long and cannot be only whitespace",
+        )
+
+    new_hash = hash_password(new_pw)
+
+    # 1. Update SQLite
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (new_hash, user["id"]),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # 2. Update PostgreSQL
+    try:
+        from database.session import SessionLocal
+        from models.database import User as PgUser
+        from sqlalchemy import func
+
+        pg_session = SessionLocal()
+        try:
+            pg_user = pg_session.query(PgUser).filter(PgUser.id == user["pg_id"]).first()
+            if pg_user:
+                pg_user.password_hash = new_hash
+                pg_user.updated_at = func.now()
+                pg_session.commit()
+        except Exception:
+            pg_session.rollback()
+            raise
+        finally:
+            pg_session.close()
+    except Exception as exc:
+        logger.error("Failed to update password in PostgreSQL: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update password in database",
+        ) from exc
+
+    logger.info("Password changed successfully for user %s", user["email"])
+    return {"message": "Password changed successfully"}
 
 
 # ── Google Authentication ───────────────────────────────────────────────────

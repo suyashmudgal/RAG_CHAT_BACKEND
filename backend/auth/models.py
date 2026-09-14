@@ -25,6 +25,20 @@ class UserResponse(BaseModel):
     name: str
     email: str
     created_at: str
+    is_oauth: bool = False
+
+
+class UpdateProfileRequest(BaseModel):
+    """Body for PATCH /auth/me."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Body for POST /auth/change-password."""
+
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class AuthResponse(BaseModel):

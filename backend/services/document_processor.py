@@ -29,7 +29,9 @@ class DocumentProcessor:
             chunk_overlap=settings.chunk_overlap,
         )
 
-    def process_document(self, file_path: Path, filename: str) -> dict:
+    def process_document(
+        self, file_path: Path, filename: str, user_id: int | None = None
+    ) -> dict:
         """Run the full pipeline and return a result dict."""
         document_id = str(uuid.uuid4())
 
@@ -38,9 +40,11 @@ class DocumentProcessor:
         # 1. Extract
         documents = extract_text(file_path)
 
-        # 2. Tag every page-level Document with the filename
+        # 2. Tag every page-level Document with the filename and user_id
         for doc in documents:
             doc.metadata["filename"] = filename
+            if user_id is not None:
+                doc.metadata["user_id"] = str(user_id)
 
         # 3. Chunk
         chunks = self.chunker.chunk_documents(documents)
@@ -56,9 +60,13 @@ class DocumentProcessor:
             "upload_time": datetime.now(timezone.utc).isoformat(),
             "file_size": file_path.stat().st_size,
         }
+        if user_id is not None:
+            doc_info["user_id"] = user_id
 
         # 5. Store in vector DB (embeddings are generated automatically by Chroma)
-        self.vector_store.add_documents(document_id, chunks, doc_info)
+        self.vector_store.add_documents(
+            document_id, chunks, doc_info, user_id=user_id
+        )
 
         logger.info(
             "Successfully processed %s → %d chunks", filename, len(chunks)

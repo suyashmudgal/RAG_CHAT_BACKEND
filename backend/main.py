@@ -119,12 +119,14 @@ async def _global_exception_handler(_request: Request, exc: Exception):
 
 from auth.router import router as auth_router  # noqa: E402
 from routes.chat import router as chat_router  # noqa: E402
+from routes.conversations import router as conversations_router  # noqa: E402
 from routes.documents import router as documents_router  # noqa: E402
 from routes.upload import router as upload_router  # noqa: E402
 
 app.include_router(auth_router, tags=["Auth"])
 app.include_router(upload_router, tags=["Upload"])
 app.include_router(documents_router, tags=["Documents"])
+app.include_router(conversations_router, tags=["Conversations"])
 app.include_router(chat_router, tags=["Chat"])
 
 

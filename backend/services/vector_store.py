@@ -72,16 +72,22 @@ class VectorStore:
         document_id: str,
         chunks: list[Document],
         doc_info: dict[str, Any],
+        user_id: int | None = None,
     ) -> None:
         """Index chunked ``Document`` objects for a single upload."""
-        # Stamp every chunk with the document_id
+        # Stamp every chunk with the document_id and user_id
         for chunk in chunks:
             chunk.metadata["document_id"] = document_id
+            if user_id is not None:
+                chunk.metadata["user_id"] = str(user_id)
 
         ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
         self.vectorstore.add_documents(chunks, ids=ids)
         self._chunk_count += len(chunks)
 
+        # Store user_id in document metadata
+        if user_id is not None:
+            doc_info["user_id"] = user_id
         self._doc_metadata[document_id] = doc_info
         self._save_metadata()
         logger.info("Indexed %d chunks for document %s", len(chunks), document_id)
@@ -89,11 +95,34 @@ class VectorStore:
     def similarity_search(
         self, query: str, top_k: int = 5
     ) -> list[tuple[Document, float]]:
-        """Return the *top_k* most relevant chunks with scores."""
+        """Return the *top_k* most relevant chunks with scores (global, unfiltered)."""
         if self._chunk_count <= 0:
             return []
         k = min(top_k, self._chunk_count)
         return self.vectorstore.similarity_search_with_score(query, k=k)
+
+    def similarity_search_for_user(
+        self, query: str, user_id: int, top_k: int = 5
+    ) -> list[tuple[Document, float]]:
+        """Return the *top_k* most relevant chunks belonging to *user_id*."""
+        # Count how many chunks this user owns
+        collection = self.vectorstore._collection
+        try:
+            user_results = collection.get(
+                where={"user_id": str(user_id)},
+                include=[],
+            )
+            user_chunk_count = len(user_results["ids"]) if user_results["ids"] else 0
+        except Exception:
+            user_chunk_count = 0
+
+        if user_chunk_count <= 0:
+            return []
+
+        k = min(top_k, user_chunk_count)
+        return self.vectorstore.similarity_search_with_score(
+            query, k=k, filter={"user_id": str(user_id)}
+        )
 
     def get_chunks_by_page(
         self, page_number: int, document_id: str | None = None
@@ -120,6 +149,30 @@ class VectorStore:
             return docs
         except Exception as exc:
             logger.warning("get_chunks_by_page error: %s", exc)
+            return []
+
+    def get_chunks_by_page_for_user(
+        self, page_number: int, user_id: int, document_id: str | None = None
+    ) -> list[Document]:
+        """Return chunks for a page filtered by user ownership."""
+        collection = self.vectorstore._collection
+        conditions: list[dict] = [
+            {"page_number": page_number},
+            {"user_id": str(user_id)},
+        ]
+        if document_id:
+            conditions.append({"document_id": document_id})
+
+        where_filter: dict = {"$and": conditions} if len(conditions) > 1 else conditions[0]
+
+        try:
+            results = collection.get(where=where_filter, include=["documents", "metadatas"])
+            docs: list[Document] = []
+            for text, meta in zip(results["documents"] or [], results["metadatas"] or []):
+                docs.append(Document(page_content=text, metadata=meta))
+            return docs
+        except Exception as exc:
+            logger.warning("get_chunks_by_page_for_user error: %s", exc)
             return []
 
     def get_all_metadata(self) -> dict[str, dict]:
@@ -149,6 +202,13 @@ class VectorStore:
     def list_documents(self) -> list[dict[str, Any]]:
         """Return metadata for every indexed document."""
         return list(self._doc_metadata.values())
+
+    def list_documents_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        """Return metadata only for documents owned by *user_id*."""
+        return [
+            doc for doc in self._doc_metadata.values()
+            if doc.get("user_id") == user_id
+        ]
 
     def get_document_info(self, document_id: str) -> dict[str, Any] | None:
         """Return metadata for a single document (or ``None``)."""

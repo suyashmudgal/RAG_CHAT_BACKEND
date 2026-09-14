@@ -7,9 +7,12 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 
+from auth.dependencies import get_current_user
 from config.settings import settings
+from database.session import SessionLocal
+from models.database import Document as PgDocument
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -18,12 +21,18 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
 
 @router.post("/upload")
-async def upload_files(files: list[UploadFile] = File(...)):
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    user: dict = Depends(get_current_user),
+):
     """Upload one or more documents for indexing."""
     from services.deps import get_document_processor
 
     processor = get_document_processor()
-    upload_dir = Path(settings.upload_dir)
+    pg_user_id: int = user["pg_id"]
+
+    # Per-user upload directory
+    upload_dir = Path(settings.upload_dir) / f"user_{pg_user_id}"
     upload_dir.mkdir(parents=True, exist_ok=True)
     max_bytes = settings.max_file_size_mb * 1024 * 1024
 
@@ -78,8 +87,33 @@ async def upload_files(files: list[UploadFile] = File(...)):
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
-                    None, processor.process_document, file_path, filename
+                    None,
+                    processor.process_document,
+                    file_path,
+                    filename,
+                    pg_user_id,
                 )
+
+                # Record in PostgreSQL
+                try:
+                    session = SessionLocal()
+                    pg_doc = PgDocument(
+                        id=result["document_id"],
+                        user_id=pg_user_id,
+                        filename=filename,
+                        storage_path=str(file_path),
+                        file_size=len(content),
+                        status=result["status"],
+                        chunk_count=result["chunk_count"],
+                    )
+                    session.add(pg_doc)
+                    session.commit()
+                except Exception as db_exc:
+                    logger.error("Failed to record document in PostgreSQL: %s", db_exc)
+                    session.rollback()
+                finally:
+                    session.close()
+
                 results.append(result)
 
             except ValueError as exc:
