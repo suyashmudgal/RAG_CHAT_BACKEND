@@ -19,7 +19,7 @@ pypdf
 docx2txt
 
 # ── Embeddings (local) ───────────────────────────────────────────────────
-sentence-transformers
+sentence-transformers>=6.0.0
 
 # ── Vector DB ─────────────────────────────────────────────────────────────
 chromadb
@@ -28,3 +28,8 @@ chromadb
 pyjwt
 bcrypt
 aiosqlite
+
+# ── Database (PostgreSQL / SQLAlchemy) ──────────────────────────────────
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0

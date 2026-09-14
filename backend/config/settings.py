@@ -42,10 +42,25 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     frontend_url: str = "http://localhost:5173"
 
+    # --- Database (Supabase PostgreSQL) ---
+    database_url: str = ""
+
     # --- Server ---
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+    @property
+    def sync_database_url(self) -> str:
+        """Return a SQLAlchemy-compatible synchronous connection string."""
+        url = self.database_url.strip()
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return url
 
 
 settings = Settings()

@@ -5,6 +5,13 @@ Registers routers, CORS, exception handlers, and startup initialization.
 
 from __future__ import annotations
 
+# Fix Windows C-runtime DLL collision between PyTorch and PyArrow (0xC0000005)
+# If pyarrow is present, importing it before torch prevents an access violation crash on Windows.
+try:
+    import pyarrow  # noqa: F401
+except ImportError:
+    pass
+
 import logging
 from contextlib import asynccontextmanager
 
@@ -36,6 +43,18 @@ async def lifespan(_app: FastAPI):
 
     await init_db()
 
+    # Check Supabase PostgreSQL connectivity
+    if settings.database_url:
+        try:
+            from database.session import ping_db
+
+            if ping_db():
+                logger.info("✅ Supabase PostgreSQL connected successfully")
+            else:
+                logger.warning("⚠️  Could not connect to Supabase PostgreSQL")
+        except Exception as exc:
+            logger.warning("⚠️  Error connecting to Supabase PostgreSQL: %s", exc)
+
     # Check Groq key
     if not settings.groq_api_key:
         logger.warning("⚠️  GROQ_API_KEY is not set — chat will NOT work.")
@@ -45,9 +64,19 @@ async def lifespan(_app: FastAPI):
     # Eagerly initialise the vector store + embedding model (downloads ~90 MB on first run)
     from services.deps import get_vector_store
 
-    logger.info("Loading embedding model & vector store …")
-    get_vector_store()
-    logger.info("✅ Vector store and embedding model ready")
+    try:
+        logger.info("Loading embedding model & vector store …")
+        get_vector_store()
+        logger.info("✅ Vector store and embedding model ready")
+    except Exception as exc:
+        logger.critical(
+            "❌ Failed to initialize vector store and embedding model: %s",
+            exc,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"DocChat AI startup failed during embedding model / vector store initialization: {exc}"
+        ) from exc
 
     yield  # ---- application is running ----
 

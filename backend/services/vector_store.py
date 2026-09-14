@@ -6,6 +6,12 @@ and persists both vectors and document-level metadata to disk.
 
 from __future__ import annotations
 
+# Guard against Windows DLL conflict (PyArrow / PyTorch CRT collision 0xC0000005)
+try:
+    import pyarrow  # noqa: F401
+except ImportError:
+    pass
+
 import json
 import logging
 from pathlib import Path
