@@ -8,10 +8,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -63,6 +65,10 @@ class Document(Base):
     file_size = Column(BigInteger, nullable=True)
     status = Column(String(50), nullable=False, default="processed")
     chunk_count = Column(Integer, nullable=False, default=0)
+    progress = Column(Integer, nullable=False, default=0)
+    processing_stage = Column(String(50), nullable=True, default="COMPLETED")
+    processed_chunks = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -71,6 +77,10 @@ class Document(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_documents_user_id_created_at", "user_id", text("created_at DESC")),
     )
 
     # Relationships
@@ -101,6 +111,10 @@ class Conversation(Base):
         index=True,
     )
 
+    __table_args__ = (
+        Index("ix_conversations_user_id_updated_at", "user_id", text("updated_at DESC")),
+    )
+
     # Relationships
     user = relationship("User", back_populates="conversations")
     messages = relationship(
@@ -127,6 +141,10 @@ class Message(Base):
     content = Column(Text, nullable=False)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        Index("ix_messages_conversation_id_created_at", "conversation_id", text("created_at ASC")),
     )
 
     # Relationships

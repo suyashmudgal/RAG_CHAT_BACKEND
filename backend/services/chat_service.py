@@ -158,9 +158,9 @@ class ChatService:
     def _load_history_for_llm(
         self, db: Session, conversation_id: str, limit: int = 20
     ) -> list:
-        """Fetch the most recent `limit` messages from PostgreSQL for LLM context."""
+        """Fetch the most recent `limit` messages from PostgreSQL for LLM context using column projection."""
         recent_messages = (
-            db.query(Message)
+            db.query(Message.role, Message.content)
             .filter(Message.conversation_id == conversation_id)
             .order_by(Message.created_at.desc())
             .limit(limit)
@@ -169,11 +169,11 @@ class ChatService:
         recent_messages.reverse()
 
         history = []
-        for msg in recent_messages:
-            if msg.role == "user":
-                history.append(HumanMessage(content=msg.content))
-            elif msg.role == "assistant":
-                history.append(AIMessage(content=msg.content))
+        for role, content in recent_messages:
+            if role == "user":
+                history.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history.append(AIMessage(content=content))
         return history
 
     def _save_message(

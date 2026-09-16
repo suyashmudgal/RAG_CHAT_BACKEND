@@ -38,7 +38,7 @@ async def _signin(ac: AsyncClient, email: str, password: str = "TestPass123!") -
 async def _upload_txt(ac: AsyncClient, filename: str, content: str) -> dict:
     """Upload a .txt file and return the first result dict."""
     files = [("files", (filename, content.encode("utf-8"), "text/plain"))]
-    res = await ac.post("/upload", files=files)
+    res = await ac.post("/upload?sync=true", files=files)
     assert res.status_code == 200, f"Upload failed ({res.status_code}): {res.text}"
     results = res.json()["results"]
     assert len(results) >= 1

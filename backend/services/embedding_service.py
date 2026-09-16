@@ -34,7 +34,7 @@ def get_embeddings(model_name: str = "all-MiniLM-L6-v2") -> HuggingFaceEmbedding
         instance = HuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
+            encode_kwargs={"normalize_embeddings": True, "batch_size": 32},
         )
         _embeddings = instance
         logger.info("Embedding model loaded successfully.")

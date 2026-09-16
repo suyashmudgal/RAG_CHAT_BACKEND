@@ -112,7 +112,7 @@ async def run_phase5_tests():
             pdf_bytes = _make_pdf(pdf_text)
 
             res = await client_a.post(
-                "/upload",
+                "/upload?sync=true",
                 files=[("files", ("apollo_spec.pdf", pdf_bytes, "application/pdf"))],
             )
             assert res.status_code == 200, f"Upload failed: {res.text}"
@@ -218,7 +218,7 @@ async def run_phase5_tests():
             # Upload a secondary document to test owner deletion
             del_content = b"Temporary document that will be deleted by owner."
             res_up = await client_a.post(
-                "/upload",
+                "/upload?sync=true",
                 files=[("files", ("delete_target.txt", del_content, "text/plain"))],
             )
             del_doc_info = res_up.json()["results"][0]
@@ -300,7 +300,7 @@ async def run_phase5_tests():
 
             # Test upload with path traversal in filename
             res_trav = await client_a.post(
-                "/upload",
+                "/upload?sync=true",
                 files=[("files", ("../../exploit.txt", b"Safe content inside", "text/plain"))],
             )
             assert res_trav.status_code == 200
@@ -375,7 +375,7 @@ async def run_phase5_tests():
             print("\n── TEST 15: Processing failure storage cleanup ──")
             # Upload empty-like text file that yields ValueError during chunking/extraction
             res_empty_chunks = await client_a.post(
-                "/upload",
+                "/upload?sync=true",
                 files=[("files", ("empty_spaces.txt", b"    \n\n   \t  ", "text/plain"))],
             )
             assert res_empty_chunks.status_code == 200

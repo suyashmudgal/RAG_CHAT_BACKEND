@@ -32,16 +32,28 @@ router = APIRouter()
 
 @router.get("/conversations", response_model=list[ConversationSummary])
 async def list_conversations(
+    limit: int = 50,
+    offset: int = 0,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return all conversations belonging to the authenticated user, ordered by updated_at DESC."""
+    """Return conversations belonging to the authenticated user, ordered by updated_at DESC.
+
+    Uses column projection and composite index for maximum query speed.
+    """
     pg_user_id: int = user["pg_id"]
     try:
         conversations = (
-            db.query(Conversation)
+            db.query(
+                Conversation.id,
+                Conversation.title,
+                Conversation.created_at,
+                Conversation.updated_at,
+            )
             .filter(Conversation.user_id == pg_user_id)
             .order_by(Conversation.updated_at.desc())
+            .limit(limit)
+            .offset(offset)
             .all()
         )
         return [
@@ -100,17 +112,24 @@ async def create_conversation(
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(
     conversation_id: str,
+    limit: int = 100,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return a single conversation and all its historical messages.
+    """Return a single conversation and recent historical messages.
 
-    Enforces ownership — returns 404 if not found or belongs to another user.
+    Enforces strict ownership: returns 404 if not found or owned by another user.
+    Uses column projection and limit to avoid unbounded message payloads.
     """
     pg_user_id: int = user["pg_id"]
     try:
         conv = (
-            db.query(Conversation)
+            db.query(
+                Conversation.id,
+                Conversation.title,
+                Conversation.created_at,
+                Conversation.updated_at,
+            )
             .filter(Conversation.id == conversation_id, Conversation.user_id == pg_user_id)
             .first()
         )
@@ -121,11 +140,19 @@ async def get_conversation(
             )
 
         messages = (
-            db.query(Message)
+            db.query(
+                Message.id,
+                Message.role,
+                Message.content,
+                Message.created_at,
+            )
             .filter(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc())
+            .limit(limit)
             .all()
         )
+        # Re-order to chronological ascending order for chat presentation
+        messages.reverse()
 
         return ConversationDetail(
             id=conv.id,

@@ -13,23 +13,40 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from auth.dependencies import get_current_user
-from database.session import SessionLocal
+from database.session import SessionLocal, get_db
 from models.database import Document as PgDocument
+from models.schemas import DocumentStatusResponse
 from services.deps import get_storage_service, get_vector_store
+from services.progress_service import progress_tracker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.get("/documents")
-async def list_documents(user: dict = Depends(get_current_user)):
+async def list_documents(
+    user: dict = Depends(get_current_user),
+    db: SessionLocal = Depends(get_db),
+):
     """Return metadata for documents owned strictly by the authenticated user."""
     pg_user_id: int = user["pg_id"]
 
-    session = SessionLocal()
     try:
         pg_docs = (
-            session.query(PgDocument)
+            db.query(
+                PgDocument.id,
+                PgDocument.filename,
+                PgDocument.storage_path,
+                PgDocument.file_size,
+                PgDocument.status,
+                PgDocument.processing_stage,
+                PgDocument.progress,
+                PgDocument.chunk_count,
+                PgDocument.processed_chunks,
+                PgDocument.created_at,
+                PgDocument.updated_at,
+                PgDocument.user_id,
+            )
             .filter(PgDocument.user_id == pg_user_id)
             .order_by(PgDocument.created_at.desc())
             .all()
@@ -42,7 +59,10 @@ async def list_documents(user: dict = Depends(get_current_user)):
                 "storage_path": doc.storage_path,
                 "file_size": doc.file_size,
                 "status": doc.status,
+                "processing_stage": doc.processing_stage,
+                "progress": doc.progress,
                 "chunk_count": doc.chunk_count,
+                "processed_chunks": doc.processed_chunks,
                 "created_at": doc.created_at.isoformat() if doc.created_at else None,
                 "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
                 "user_id": doc.user_id,
@@ -55,8 +75,35 @@ async def list_documents(user: dict = Depends(get_current_user)):
         # Fallback to vector store for resilience
         store = get_vector_store()
         return {"documents": store.list_documents_for_user(pg_user_id)}
-    finally:
-        session.close()
+
+
+@router.get("/documents/{document_id}/status", response_model=DocumentStatusResponse)
+async def get_document_status(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Retrieve real-time processing stage & progress for a document owned by user.
+
+    Strict user isolation: Returns 404 if not found or belongs to another user.
+    Never exposes internal tracebacks or secrets.
+    """
+    pg_user_id: int = user["pg_id"]
+    status_info = progress_tracker.get_status(document_id, user_id=pg_user_id)
+
+    if not status_info:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return DocumentStatusResponse(
+        document_id=status_info["document_id"],
+        filename=status_info.get("filename", "unknown"),
+        status=status_info.get("status", "QUEUED"),
+        processing_stage=status_info.get("processing_stage", "QUEUED"),
+        progress=status_info.get("progress", 0),
+        message=status_info.get("message", "Processing..."),
+        chunk_count=status_info.get("chunk_count", 0),
+        processed_chunks=status_info.get("processed_chunks", 0),
+        error=status_info.get("error"),
+    )
 
 
 @router.get("/documents/{document_id}/download")

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings
+from services.progress_service import ProcessingStage, progress_tracker
 from services.text_chunker import DocumentChunker
 from services.text_extractor import extract_text
 from services.vector_store import VectorStore
@@ -35,22 +36,38 @@ class DocumentProcessor:
         filename: str,
         user_id: int | None = None,
         document_id: str | None = None,
+        progress_callback: Any | None = None,
     ) -> dict:
-        """Run the full pipeline and return a result dict."""
+        """Run the full pipeline and return a result dict with real-time stage updates."""
         document_id = document_id or str(uuid.uuid4())
 
         logger.info("Processing document: %s (id: %s)", filename, document_id)
 
-        # 1. Extract
+        # 1. Extract stage
+        if progress_callback:
+            progress_callback(ProcessingStage.EXTRACTING)
+        else:
+            progress_tracker.update_stage(document_id, ProcessingStage.EXTRACTING)
+
         documents = extract_text(file_path)
 
-        # 2. Tag every page-level Document with the filename and user_id
+        # 2. Parsing stage
+        if progress_callback:
+            progress_callback(ProcessingStage.PARSING)
+        else:
+            progress_tracker.update_stage(document_id, ProcessingStage.PARSING)
+
         for doc in documents:
             doc.metadata["filename"] = filename
             if user_id is not None:
                 doc.metadata["user_id"] = str(user_id)
 
-        # 3. Chunk
+        # 3. Chunking stage
+        if progress_callback:
+            progress_callback(ProcessingStage.CHUNKING)
+        else:
+            progress_tracker.update_stage(document_id, ProcessingStage.CHUNKING)
+
         chunks = self.chunker.chunk_documents(documents)
         if not chunks:
             raise ValueError("No text chunks could be created from the document")
@@ -67,10 +84,32 @@ class DocumentProcessor:
         if user_id is not None:
             doc_info["user_id"] = user_id
 
-        # 5. Store in vector DB (embeddings are generated automatically by Chroma)
+        # 5. Embedding & Indexing stage with batch callback
+        if progress_callback:
+            progress_callback(ProcessingStage.EMBEDDING, chunk_count=len(chunks))
+        else:
+            progress_tracker.update_stage(
+                document_id, ProcessingStage.EMBEDDING, chunk_count=len(chunks)
+            )
+
+        def _on_embedding_progress(processed: int, total: int):
+            progress_tracker.update_embedding_progress(document_id, processed, total)
+
         self.vector_store.add_documents(
-            document_id, chunks, doc_info, user_id=user_id
+            document_id=document_id,
+            chunks=chunks,
+            doc_info=doc_info,
+            user_id=user_id,
+            progress_callback=_on_embedding_progress,
         )
+
+        # 6. Finalizing
+        if progress_callback:
+            progress_callback(ProcessingStage.FINALIZING, chunk_count=len(chunks))
+        else:
+            progress_tracker.update_stage(
+                document_id, ProcessingStage.FINALIZING, chunk_count=len(chunks)
+            )
 
         logger.info(
             "Successfully processed %s → %d chunks", filename, len(chunks)

@@ -73,24 +73,40 @@ class VectorStore:
         chunks: list[Document],
         doc_info: dict[str, Any],
         user_id: int | None = None,
+        progress_callback: Any | None = None,
+        batch_size: int = 32,
     ) -> None:
-        """Index chunked ``Document`` objects for a single upload."""
+        """Index chunked ``Document`` objects for a single upload in batches."""
         # Stamp every chunk with the document_id and user_id
         for chunk in chunks:
             chunk.metadata["document_id"] = document_id
             if user_id is not None:
                 chunk.metadata["user_id"] = str(user_id)
 
-        ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
-        self.vectorstore.add_documents(chunks, ids=ids)
-        self._chunk_count += len(chunks)
+        total_chunks = len(chunks)
+        ids = [f"{document_id}_chunk_{i}" for i in range(total_chunks)]
+
+        # Process in batches to vectorize embeddings efficiently and report progress
+        for i in range(0, total_chunks, batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+            batch_ids = ids[i : i + batch_size]
+            self.vectorstore.add_documents(batch_chunks, ids=batch_ids)
+
+            processed_so_far = min(i + batch_size, total_chunks)
+            if progress_callback is not None:
+                try:
+                    progress_callback(processed_so_far, total_chunks)
+                except Exception as cb_err:
+                    logger.warning("Progress callback error: %s", cb_err)
+
+        self._chunk_count += total_chunks
 
         # Store user_id in document metadata
         if user_id is not None:
             doc_info["user_id"] = user_id
         self._doc_metadata[document_id] = doc_info
         self._save_metadata()
-        logger.info("Indexed %d chunks for document %s", len(chunks), document_id)
+        logger.info("Indexed %d chunks for document %s", total_chunks, document_id)
 
     def similarity_search(
         self, query: str, top_k: int = 5
@@ -104,25 +120,17 @@ class VectorStore:
     def similarity_search_for_user(
         self, query: str, user_id: int, top_k: int = 5
     ) -> list[tuple[Document, float]]:
-        """Return the *top_k* most relevant chunks belonging to *user_id*."""
-        # Count how many chunks this user owns
-        collection = self.vectorstore._collection
-        try:
-            user_results = collection.get(
-                where={"user_id": str(user_id)},
-                include=[],
-            )
-            user_chunk_count = len(user_results["ids"]) if user_results["ids"] else 0
-        except Exception:
-            user_chunk_count = 0
-
-        if user_chunk_count <= 0:
+        """Return the *top_k* most relevant chunks belonging to *user_id* without collection scanning."""
+        if self._chunk_count <= 0:
             return []
 
-        k = min(top_k, user_chunk_count)
-        return self.vectorstore.similarity_search_with_score(
-            query, k=k, filter={"user_id": str(user_id)}
-        )
+        try:
+            return self.vectorstore.similarity_search_with_score(
+                query, k=top_k, filter={"user_id": str(user_id)}
+            )
+        except Exception as exc:
+            logger.warning("similarity_search_for_user query error: %s", exc)
+            return []
 
     def get_chunks_by_page(
         self, page_number: int, document_id: str | None = None

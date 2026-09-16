@@ -15,6 +15,10 @@ class UploadResult(BaseModel):
     status: str
     chunk_count: int = 0
     message: str
+    progress: int = 0
+    processing_stage: Optional[str] = None
+    processed_chunks: int = 0
+    storage_path: Optional[str] = None
 
 
 class UploadResponse(BaseModel):
@@ -34,12 +38,29 @@ class DocumentInfo(BaseModel):
     chunk_count: int
     upload_time: str
     file_size: Optional[int] = None
+    progress: Optional[int] = None
+    processing_stage: Optional[str] = None
+    processed_chunks: Optional[int] = None
 
 
 class DocumentListResponse(BaseModel):
     """Response for GET /documents."""
 
     documents: list[DocumentInfo]
+
+
+class DocumentStatusResponse(BaseModel):
+    """Real-time processing status for a single document."""
+
+    document_id: str
+    filename: str
+    status: str
+    processing_stage: str
+    progress: int
+    message: str
+    chunk_count: int = 0
+    processed_chunks: int = 0
+    error: Optional[str] = None
 
 
 class DeleteResponse(BaseModel):
