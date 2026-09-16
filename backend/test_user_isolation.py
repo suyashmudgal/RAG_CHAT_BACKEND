@@ -4,10 +4,18 @@ Tests 1–11 verify that user-wise data isolation is correctly enforced
 across documents, conversations, messages, RAG retrieval, and auth.
 """
 
+import sys
 import uuid
 import asyncio
 from httpx import AsyncClient, ASGITransport
 from main import app
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _unique_email(prefix: str = "iso") -> str:

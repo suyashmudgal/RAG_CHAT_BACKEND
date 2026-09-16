@@ -30,12 +30,16 @@ class DocumentProcessor:
         )
 
     def process_document(
-        self, file_path: Path, filename: str, user_id: int | None = None
+        self,
+        file_path: Path,
+        filename: str,
+        user_id: int | None = None,
+        document_id: str | None = None,
     ) -> dict:
         """Run the full pipeline and return a result dict."""
-        document_id = str(uuid.uuid4())
+        document_id = document_id or str(uuid.uuid4())
 
-        logger.info("Processing document: %s", filename)
+        logger.info("Processing document: %s (id: %s)", filename, document_id)
 
         # 1. Extract
         documents = extract_text(file_path)

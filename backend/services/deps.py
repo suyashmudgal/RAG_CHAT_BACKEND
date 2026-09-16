@@ -32,3 +32,11 @@ def get_chat_service():
     from services.chat_service import ChatService
 
     return ChatService(vector_store=get_vector_store())
+
+
+@lru_cache()
+def get_storage_service():
+    """Return the singleton :class:`SupabaseStorageService`."""
+    from services.storage_service import SupabaseStorageService
+
+    return SupabaseStorageService()

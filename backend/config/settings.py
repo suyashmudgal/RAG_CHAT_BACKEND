@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # --- Database (Supabase PostgreSQL) ---
     database_url: str = ""
 
+    # --- Supabase Storage ---
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_storage_bucket: str = "documents"
+
     # --- Server ---
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
@@ -61,6 +66,22 @@ class Settings(BaseSettings):
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         return url
+
+    @property
+    def resolved_supabase_url(self) -> str:
+        """Return explicit supabase_url, or infer from database_url if available."""
+        if self.supabase_url.strip():
+            return self.supabase_url.strip().rstrip("/")
+        # Attempt to infer from database_url e.g. @db.<ref>.supabase.co
+        db_url = self.database_url.strip()
+        if "@db." in db_url and ".supabase.co" in db_url:
+            try:
+                ref = db_url.split("@db.")[1].split(".supabase.co")[0]
+                if ref:
+                    return f"https://{ref}.supabase.co"
+            except Exception:
+                pass
+        return ""
 
 
 settings = Settings()

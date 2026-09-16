@@ -20,9 +20,17 @@ TEST 16: After User A logout and User B login, User B sees strictly User B's pro
 """
 
 import asyncio
+import sys
 import uuid
 import bcrypt
 from httpx import ASGITransport, AsyncClient
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from main import app
 from auth.database import get_db as get_sqlite_db

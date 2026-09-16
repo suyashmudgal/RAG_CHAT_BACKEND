@@ -18,8 +18,16 @@ TEST 13: User logout -> User B login -> User B sees only User B's chat history.
 
 import asyncio
 import json
+import sys
 import uuid
 from httpx import ASGITransport, AsyncClient
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from main import app
 from database.session import SessionLocal
