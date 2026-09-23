@@ -6,6 +6,7 @@ source of truth and Supabase Storage as physical file source of truth.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 from pathlib import Path
@@ -28,11 +29,15 @@ async def list_documents(
     user: dict = Depends(get_current_user),
     db: SessionLocal = Depends(get_db),
 ):
-    """Return metadata for documents owned strictly by the authenticated user."""
+    """Return metadata for documents owned strictly by the authenticated user.
+
+    Uses column projection and composite index for maximum speed.
+    Offloaded to threadpool to avoid blocking the event loop.
+    """
     pg_user_id: int = user["pg_id"]
 
-    try:
-        pg_docs = (
+    def _query():
+        return (
             db.query(
                 PgDocument.id,
                 PgDocument.filename,
@@ -51,6 +56,9 @@ async def list_documents(
             .order_by(PgDocument.created_at.desc())
             .all()
         )
+
+    try:
+        pg_docs = await asyncio.to_thread(_query)
         docs_list = [
             {
                 "document_id": doc.id,
@@ -257,6 +265,9 @@ async def delete_document(
         # 3. Delete PostgreSQL record
         session.delete(pg_doc)
         session.commit()
+
+        # Evict from in-memory progress tracker cache
+        progress_tracker.evict_job(document_id)
 
         logger.info("Document '%s' (%s) deleted by user %d", filename, document_id, pg_user_id)
         return {

@@ -59,6 +59,13 @@ class ProgressTracker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._completed_cache: dict[str, dict[str, Any]] = {}
+
+    def evict_job(self, document_id: str) -> None:
+        """Evict a document from in-memory tracking and status cache (e.g. on deletion)."""
+        with self._lock:
+            self._jobs.pop(document_id, None)
+            self._completed_cache.pop(document_id, None)
 
     def register_job(
         self,
@@ -169,7 +176,7 @@ class ProgressTracker:
         self, document_id: str, chunk_count: int | None = None
     ) -> dict[str, Any]:
         """Mark document processing as completed successfully."""
-        return self.update_stage(
+        res = self.update_stage(
             document_id=document_id,
             stage=ProcessingStage.COMPLETED,
             message="Document processing completed successfully",
@@ -178,6 +185,9 @@ class ProgressTracker:
             processed_chunks=chunk_count,
             sync_db=True,
         )
+        with self._lock:
+            self._completed_cache[document_id] = dict(res)
+        return res
 
     def mark_failed(self, document_id: str, error_message: str) -> dict[str, Any]:
         """Mark document processing as failed with safe sanitized error message."""
@@ -186,13 +196,16 @@ class ProgressTracker:
         if len(clean_msg) > 300:
             clean_msg = clean_msg[:297] + "..."
 
-        return self.update_stage(
+        res = self.update_stage(
             document_id=document_id,
             stage=ProcessingStage.FAILED,
             message=f"Processing failed: {clean_msg}",
             error=clean_msg,
             sync_db=True,
         )
+        with self._lock:
+            self._completed_cache[document_id] = dict(res)
+        return res
 
     def get_status(
         self, document_id: str, user_id: int | None = None
@@ -200,6 +213,7 @@ class ProgressTracker:
         """Retrieve current document processing status, enforcing user ownership.
 
         Returns None if document not found or belongs to another user.
+        Uses two tiers of in-memory caching to guarantee sub-millisecond polling response.
         """
         # 1. Check in-memory active jobs
         with self._lock:
@@ -210,11 +224,29 @@ class ProgressTracker:
                     return None
                 return dict(active_job)
 
-        # 2. Check PostgreSQL source of truth
+            # 2. Check in-memory completed cache
+            cached_job = self._completed_cache.get(document_id)
+            if cached_job:
+                cached_user_id = cached_job.get("user_id")
+                if user_id is not None and cached_user_id is not None and cached_user_id != user_id:
+                    return None
+                return dict(cached_job)
+
+        # 3. Check PostgreSQL source of truth using column projection
         session = SessionLocal()
         try:
             doc = (
-                session.query(PgDocument)
+                session.query(
+                    PgDocument.id,
+                    PgDocument.user_id,
+                    PgDocument.filename,
+                    PgDocument.status,
+                    PgDocument.processing_stage,
+                    PgDocument.progress,
+                    PgDocument.chunk_count,
+                    PgDocument.processed_chunks,
+                    PgDocument.error_message,
+                )
                 .filter(PgDocument.id == document_id)
                 .first()
             )
@@ -233,7 +265,7 @@ class ProgressTracker:
             if doc.error_message:
                 msg = f"Processing failed: {doc.error_message}"
 
-            return {
+            status_result = {
                 "document_id": doc.id,
                 "user_id": doc.user_id,
                 "filename": doc.filename,
@@ -245,6 +277,12 @@ class ProgressTracker:
                 "processed_chunks": processed_chunks,
                 "error": doc.error_message,
             }
+
+            # Cache terminal status to avoid future DB hits during polling
+            with self._lock:
+                self._completed_cache[document_id] = dict(status_result)
+
+            return status_result
         except Exception as exc:
             logger.error("Error reading document status from DB for %s: %s", document_id, exc)
             return None

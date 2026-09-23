@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from auth.database import get_db
-from auth.dependencies import get_current_user
+from auth.dependencies import get_current_user, invalidate_user_cache
 from auth.models import (
     AuthConfigResponse,
     AuthResponse,
@@ -154,37 +154,16 @@ async def signout(response: Response):
 
 @router.get("/me", response_model=UserResponse)
 async def me(user: dict = Depends(get_current_user)):
-    """Return the currently authenticated user's profile."""
+    """Return the currently authenticated user's profile.
+
+    Fast in-memory resolution from authenticated user context.
+    """
     is_oauth = str(user.get("password_hash", "")).startswith("oauth:")
-    name = user["name"]
-    email = user["email"]
-    created_at = user["created_at"]
-    user_id = user["id"]
-
-    try:
-        from database.session import SessionLocal
-        from models.database import User as PgUser
-
-        db = SessionLocal()
-        try:
-            pg_user = db.query(PgUser).filter(PgUser.id == user["pg_id"]).first()
-            if pg_user:
-                name = pg_user.name
-                email = pg_user.email
-                if hasattr(pg_user.created_at, "isoformat"):
-                    created_at = pg_user.created_at.isoformat()
-                elif pg_user.created_at:
-                    created_at = str(pg_user.created_at)
-        finally:
-            db.close()
-    except Exception as exc:
-        logger.warning("Could not refresh user from PostgreSQL: %s", exc)
-
     return UserResponse(
-        id=user_id,
-        name=name,
-        email=email,
-        created_at=created_at,
+        id=user["id"],
+        name=user["name"],
+        email=user["email"],
+        created_at=str(user.get("created_at", "")),
         is_oauth=is_oauth,
     )
 
@@ -262,6 +241,7 @@ async def update_profile(
         ) from exc
 
     is_oauth = str(user.get("password_hash", "")).startswith("oauth:")
+    invalidate_user_cache(user["id"])
     logger.info("Updated profile name for user %s to '%s'", user["email"], new_name)
     return UserResponse(
         id=user["id"],
@@ -282,7 +262,22 @@ async def change_password(
     Verifies current password, hashes new password with bcrypt, and updates both SQLite and PostgreSQL.
     Rejects password changes for Google OAuth accounts.
     """
-    pw_hash = user.get("password_hash", "")
+    # Fetch authoritative fresh user record from SQLite
+    db_auth = await get_db()
+    try:
+        cursor = await db_auth.execute("SELECT * FROM users WHERE id = ?", (user["id"],))
+        fresh_user = await cursor.fetchone()
+    finally:
+        await db_auth.close()
+
+    if fresh_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+
+    fresh_dict = dict(fresh_user)
+    pw_hash = fresh_dict.get("password_hash", "")
     if str(pw_hash).startswith("oauth:"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -342,6 +337,7 @@ async def change_password(
             detail="Failed to update password in database",
         ) from exc
 
+    invalidate_user_cache(user["id"])
     logger.info("Password changed successfully for user %s", user["email"])
     return {"message": "Password changed successfully"}
 

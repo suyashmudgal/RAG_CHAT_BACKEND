@@ -98,6 +98,8 @@ class ChatService:
                 id=conversation_id,
                 user_id=user_id,
                 title=initial_title or "New Conversation",
+                is_pinned=False,
+                is_custom_title=bool(initial_title and initial_title != "New Conversation"),
             )
             db.add(conv)
             db.commit()
@@ -137,6 +139,8 @@ class ChatService:
                 id=mapped_id,
                 user_id=user_id,
                 title=initial_title or "New Conversation",
+                is_pinned=False,
+                is_custom_title=bool(initial_title and initial_title != "New Conversation"),
             )
             db.add(conv)
             db.commit()
@@ -149,6 +153,8 @@ class ChatService:
             id=new_id,
             user_id=user_id,
             title=initial_title or "New Conversation",
+            is_pinned=False,
+            is_custom_title=bool(initial_title and initial_title != "New Conversation"),
         )
         db.add(conv)
         db.commit()
@@ -283,8 +289,8 @@ class ChatService:
                 db, user_id=user_id, conversation_id=conversation_id, session_id=session_id
             )
 
-            # Auto-title conversation on first message
-            if conv.title == "New Conversation" and question:
+            # Auto-title conversation on first message ONLY if not manually renamed
+            if not getattr(conv, "is_custom_title", False) and conv.title == "New Conversation" and question:
                 clean_title = question.strip()
                 if len(clean_title) > 60:
                     clean_title = clean_title[:57] + "..."
@@ -353,8 +359,8 @@ class ChatService:
             )
             conv_id = conv.id
 
-            # Auto-title on first message
-            if conv.title == "New Conversation" and question:
+            # Auto-title on first message ONLY if not manually renamed
+            if not getattr(conv, "is_custom_title", False) and conv.title == "New Conversation" and question:
                 clean_title = question.strip()
                 if len(clean_title) > 60:
                     clean_title = clean_title[:57] + "..."

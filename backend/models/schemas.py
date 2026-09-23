@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Upload ──────────────────────────────────────────────────────────────────
@@ -115,6 +115,25 @@ class ConversationSummary(BaseModel):
     title: str
     created_at: str
     updated_at: str
+    is_pinned: bool = False
+
+
+class ConversationUpdate(BaseModel):
+    """Request body for PATCH /conversations/{conversation_id}."""
+
+    title: Optional[str] = Field(None, max_length=255)
+    is_pinned: Optional[bool] = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("Title cannot be empty or whitespace only")
+            if len(v) > 255:
+                raise ValueError("Title cannot exceed 255 characters")
+        return v
 
 
 class MessageItem(BaseModel):
@@ -133,6 +152,7 @@ class ConversationDetail(BaseModel):
     title: str
     created_at: str
     updated_at: str
+    is_pinned: bool = False
     messages: list[MessageItem]
 
 

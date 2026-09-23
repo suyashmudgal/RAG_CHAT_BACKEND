@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -100,6 +101,8 @@ class Conversation(Base):
         index=True,
     )
     title = Column(String(255), nullable=False, default="New Conversation")
+    is_pinned = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_custom_title = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -113,6 +116,7 @@ class Conversation(Base):
 
     __table_args__ = (
         Index("ix_conversations_user_id_updated_at", "user_id", text("updated_at DESC")),
+        Index("ix_conversations_user_pin_updated", "user_id", text("is_pinned DESC"), text("updated_at DESC")),
     )
 
     # Relationships
