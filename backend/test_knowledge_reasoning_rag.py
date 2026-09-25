@@ -285,16 +285,16 @@ async def run_knowledge_reasoning_tests():
         all_passed = False
 
     # =========================================================================
-    # TEST 6: Truly Insufficient Information
+    # TEST 6: General Knowledge Question (Supervised vs Unsupervised Learning)
     # =========================================================================
     print("\n" + "-" * 75)
-    print("[TEST 6: Truly Insufficient Information Handling]")
-    print("Question: 'What was the exact dollar cost in US Dollars to train the Transformer in the paper?'")
-    print("Expected: Correctly states this document-specific fact is not available.")
+    print("[TEST 6: General Knowledge Handling]")
+    print("Question: 'What is the difference between supervised and unsupervised learning?'")
+    print("Expected: Answered using general knowledge; answer_type=GENERAL_KNOWLEDGE; NO fabricated citations.")
 
     await asyncio.sleep(1.0)
     res6 = await chat_service.get_answer(
-        "What was the exact dollar cost in US Dollars to train the Transformer in the paper?",
+        "What is the difference between supervised and unsupervised learning?",
         conversation_id=conv_id,
         user_id=user_id,
     )
@@ -302,34 +302,68 @@ async def run_knowledge_reasoning_tests():
     sources6 = res6.get("sources", [])
     ans_type6 = res6.get("answer_type")
 
-    print(f"Answer Preview: {ans6[:220]}...")
+    print(f"Answer Preview: {ans6[:240]}...")
     print(f"Answer Type: {ans_type6}, Sources: {len(sources6)}")
 
     ans6_clean = re.sub(r'[*_`]', '', ans6.lower())
-    states_unavailable = (
-        "couldn't find" in ans6_clean
-        or "could not find" in ans6_clean
-        or "does not mention" in ans6_clean
-        or "do not contain" in ans6_clean
-        or "does not contain" in ans6_clean
-        or "not provide" in ans6_clean
-        or "not mentioned" in ans6_clean
-        or "not present" in ans6_clean
-        or "not stated" in ans6_clean
-        or "does not specify" in ans6_clean
-    )
+    has_gk_explanation = "supervised" in ans6_clean and ("unsupervised" in ans6_clean or "unlabeled" in ans6_clean or "labels" in ans6_clean)
+    no_fabricated_citations = (len(sources6) == 0)
+    is_gk_type = (ans_type6 == AnswerType.GENERAL_KNOWLEDGE.value)
 
-    if states_unavailable:
-        print("✅ PASS: Correctly recognized truly missing document-specific fact without hallucinating.")
+    if has_gk_explanation and no_fabricated_citations and is_gk_type:
+        print("✅ PASS: Correctly answered using general knowledge without fabricated citations (GENERAL_KNOWLEDGE).")
     else:
-        print("❌ FAIL: Did not properly state insufficient information.")
+        print(f"❌ FAIL: has_gk_explanation={has_gk_explanation}, no_fabricated_citations={no_fabricated_citations}, is_gk_type={is_gk_type} (got {ans_type6})")
         all_passed = False
 
     # =========================================================================
-    # PART 7: User Isolation Check
+    # TEST 7: Truly Insufficient Information
+    # =========================================================================
+    print("\n" + "-" * 75)
+    print("[TEST 7: Truly Insufficient Information Handling]")
+    print("Question: 'What was the exact dollar cost in US Dollars to train the Transformer in the paper?'")
+    print("Expected: Correctly states this document-specific fact is not available (INSUFFICIENT_INFORMATION).")
+
+    await asyncio.sleep(1.0)
+    res7 = await chat_service.get_answer(
+        "What was the exact dollar cost in US Dollars to train the Transformer in the paper?",
+        conversation_id=conv_id,
+        user_id=user_id,
+    )
+    ans7 = res7["answer"]
+    sources7 = res7.get("sources", [])
+    ans_type7 = res7.get("answer_type")
+
+    print(f"Answer Preview: {ans7[:220]}...")
+    print(f"Answer Type: {ans_type7}, Sources: {len(sources7)}")
+
+    ans7_clean = re.sub(r'[*_`]', '', ans7.lower())
+    states_unavailable = (
+        "couldn't find" in ans7_clean
+        or "could not find" in ans7_clean
+        or "does not mention" in ans7_clean
+        or "do not contain" in ans7_clean
+        or "does not contain" in ans7_clean
+        or "not provide" in ans7_clean
+        or "not mentioned" in ans7_clean
+        or "not present" in ans7_clean
+        or "not stated" in ans7_clean
+        or "does not specify" in ans7_clean
+        or "no information" in ans7_clean
+    )
+    is_insufficient_type = (ans_type7 == AnswerType.INSUFFICIENT_INFORMATION.value)
+
+    if states_unavailable and len(sources7) == 0 and is_insufficient_type:
+        print("✅ PASS: Correctly recognized truly missing document-specific fact without hallucinating (INSUFFICIENT_INFORMATION).")
+    else:
+        print(f"❌ FAIL: states_unavailable={states_unavailable}, sources={len(sources7)}, is_insufficient_type={is_insufficient_type} (got {ans_type7})")
+        all_passed = False
+
+    # =========================================================================
+    # TEST 8: User Isolation Check
     # =========================================================================
     print("\n" + "=" * 75)
-    print("[PART 7: User Isolation Verification]")
+    print("[TEST 8: User Isolation Verification]")
     unauthorized_user_id = 999999
     context, unauth_raw, analysis = await asyncio.to_thread(
         chat_service._retrieve_context, "What is 3 + 4 in the math document?", unauthorized_user_id, []
@@ -347,7 +381,7 @@ async def run_knowledge_reasoning_tests():
 
     print("\n" + "=" * 75)
     if all_passed:
-        print("🎉 ALL 6 KNOWLEDGE-GROUNDED REASONING TESTS AND ISOLATION PASSED!")
+        print("🎉 ALL 8 KNOWLEDGE-GROUNDED REASONING TESTS AND ISOLATION PASSED!")
     else:
         print("❌ ONE OR MORE TESTS FAILED.")
     print("=" * 75)
@@ -355,3 +389,4 @@ async def run_knowledge_reasoning_tests():
 
 if __name__ == "__main__":
     asyncio.run(run_knowledge_reasoning_tests())
+

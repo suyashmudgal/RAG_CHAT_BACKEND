@@ -58,17 +58,23 @@ CORE OPERATIONAL PRINCIPLES:
      c) Practical implementations, code examples, or general best practices you supply.
    - NEVER pretend that the uploaded document contains code, experimental numbers, or specific facts that it does not contain.
 
-3. CITATION RULES:
+3. GENERAL KNOWLEDGE HANDLING:
+   - If the user asks a legitimate general conceptual, programming, or domain question (such as 'What is the difference between supervised and unsupervised learning?') that is not covered in the uploaded documents:
+     * Answer thoroughly, accurately, and helpfully using general knowledge.
+     * Do NOT fabricate document citations or falsely attribute general knowledge to the uploaded files.
+     * Do NOT refuse with 'I could not find this information' for general knowledge questions.
+
+4. CITATION RULES:
    - Explicitly cite the document name and page number when referencing concepts or facts from documents (e.g., [From: NIPS-2017-attention-is-all-you-need-Paper.pdf, Page 3]).
    - Do NOT attach citations to generated code blocks or external general knowledge as if they were written in the document.
 
-4. ATS & RESUME EVALUATION:
+5. ATS & RESUME EVALUATION:
    - When analyzing resumes or candidates, perform an evidence-based qualitative assessment (skills, experience, projects, formatting).
    - NEVER fabricate an arbitrary numeric ATS score (e.g., "92% ATS" or "Score: 85/100") unless explicitly in the text.
 
-5. WHEN TO STATE INSUFFICIENT INFORMATION:
+6. WHEN TO STATE INSUFFICIENT INFORMATION:
    - State that information is unavailable ONLY when:
-     1) The user explicitly demands a specific document-internal fact, metric, or entity that is completely absent and cannot be inferred, calculated, or derived.
+     1) The user explicitly demands a specific document-internal fact, metric, or entity that is completely absent and cannot be inferred, calculated, or derived (e.g. exact dollar training cost in a research paper).
      2) The topic is entirely outside both the uploaded documents and valid general knowledge.
    - NEVER say "I couldn't find this information in the uploaded documents." simply because the exact question or answer is not verbatim in the text. When a concept exists in the document, reason from it and answer!"""
 
@@ -601,20 +607,31 @@ class ChatService:
             "cannot be answered or derived",
         ]
         opening = low_clean[:350]
+        # 1. Check for genuine missing document-specific information / refusal
         if any(rp in opening for rp in rejection_phrases) and "```" not in answer and "applying that concept" not in low_clean and "derived" not in low_clean:
             return AnswerType.INSUFFICIENT_INFORMATION.value
 
         if any(rp in low_clean for rp in rejection_phrases) and len(sources) == 0:
             return AnswerType.INSUFFICIENT_INFORMATION.value
 
-        if analysis:
-            if analysis.is_code_requested or "```" in answer or "practical implementation" in low_clean or "pytorch" in low_clean:
-                return AnswerType.APPLICATION_IMPLEMENTATION.value
-            if analysis.is_reasoning_required or "applying that concept" in low_clean or "derived" in low_clean or "conceptually" in low_clean:
-                return AnswerType.DERIVED_FROM_DOCUMENT_CONCEPT.value
-            if analysis.intent == QueryIntent.GENERAL_KNOWLEDGE:
-                return AnswerType.GENERAL_KNOWLEDGE.value
+        # 2. General Knowledge: explicitly classified or answered without document citations
+        if analysis and analysis.intent == QueryIntent.GENERAL_KNOWLEDGE:
+            return AnswerType.GENERAL_KNOWLEDGE.value
 
+        if len(sources) == 0 and not (analysis and (analysis.is_code_requested or analysis.is_reasoning_required)):
+            return AnswerType.GENERAL_KNOWLEDGE.value
+
+        # 3. Application / Implementation: practical code generated based on document specifications
+        if (analysis and analysis.is_code_requested) or (
+            len(sources) > 0 and ("```" in answer or "practical implementation" in low_clean) and not (analysis and analysis.is_reasoning_required)
+        ):
+            return AnswerType.APPLICATION_IMPLEMENTATION.value
+
+        # 4. Derived from Document Concept: logical or mathematical derivation from document rules
+        if (analysis and analysis.is_reasoning_required) or "applying that concept" in low_clean or "derived" in low_clean or "conceptually" in low_clean:
+            return AnswerType.DERIVED_FROM_DOCUMENT_CONCEPT.value
+
+        # 5. Directly Grounded: exact fact present in document
         if len(sources) > 0:
             return AnswerType.DIRECTLY_GROUNDED.value
 

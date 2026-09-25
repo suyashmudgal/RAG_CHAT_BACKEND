@@ -129,6 +129,10 @@ _FOLLOW_UP_PATTERNS = [
 ]
 
 _GENERAL_KNOWLEDGE_PATTERNS = [
+    r"\bwhat\s+is\s+the\s+difference\s+between\b",
+    r"\bdifference\s+between\s+.*?\s+and\b",
+    r"\bdistinguish\s+between\b",
+    r"\bwhat\s+is\s+(?:supervised|unsupervised|reinforcement|semi-supervised)\s+learning\b",
     r"\bwhat\s+skills\s+should\s+a\s+fresher\s+learn\b",
     r"\bhow\s+to\s+prepare\s+for\b",
     r"\bwhat\s+is\s+an?\s+ats\b",

@@ -47,6 +47,8 @@ async def _upload_txt(ac: AsyncClient, filename: str, content: str) -> dict:
 
 
 async def run_tests():
+    from services.deps import get_vector_store
+    get_vector_store()
     transport = ASGITransport(app=app)
 
     email_a = _unique_email("userA")

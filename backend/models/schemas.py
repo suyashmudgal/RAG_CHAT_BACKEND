@@ -98,6 +98,7 @@ class ChatResponse(BaseModel):
     sources: list[SourceCitation]
     conversation_id: str
     session_id: str
+    answer_type: Optional[str] = None
 
 
 # ── Conversations ───────────────────────────────────────────────────────────
