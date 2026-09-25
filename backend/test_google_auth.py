@@ -65,20 +65,21 @@ async def run_google_auth_tests():
         assert after_me.status_code == 401
         print("PASS: /auth/me rejected unauthenticated request after signout (401)")
 
-        # 7. OAuth Redirect Flow: /auth/google/login
-        login_res = await ac.get("/auth/google/login", follow_redirects=False)
-        assert login_res.status_code in (302, 307), f"Expected redirect, got: {login_res.status_code}"
-        redirect_url = login_res.headers["location"]
-        parsed_url = urlparse(redirect_url)
-        assert parsed_url.hostname == "accounts.google.com"
-        assert parsed_url.path == "/o/oauth2/v2/auth"
-        query_params = parse_qs(parsed_url.query)
-        assert query_params["client_id"][0] == settings.google_client_id
-        assert query_params["redirect_uri"][0] == settings.google_redirect_uri
-        assert query_params["redirect_uri"][0] == "http://localhost:8000/auth/google/callback"
-        print("PASS: /auth/google/login generates correct Google OAuth URL with callback:", settings.google_redirect_uri)
+        # 7. OAuth Redirect Flow: /auth/google and /auth/google/login
+        for endpoint in ["/auth/google", "/auth/google/login"]:
+            login_res = await ac.get(endpoint, follow_redirects=False)
+            assert login_res.status_code in (302, 307), f"Expected redirect on {endpoint}, got: {login_res.status_code}"
+            redirect_url = login_res.headers["location"]
+            parsed_url = urlparse(redirect_url)
+            assert parsed_url.hostname == "accounts.google.com"
+            assert parsed_url.path == "/o/oauth2/v2/auth"
+            query_params = parse_qs(parsed_url.query)
+            assert query_params["client_id"][0] == settings.google_client_id
+            assert query_params["redirect_uri"][0] == settings.google_redirect_uri
+            assert query_params["redirect_uri"][0] == "http://localhost:8001/auth/google/callback"
+            print(f"PASS: {endpoint} generates correct Google OAuth URL with callback:", settings.google_redirect_uri)
 
-        # 8. OAuth Redirect Callback Flow: /auth/google/callback
+        # 8. OAuth Redirect Callback Flow: /auth/google/callback (First Login: New User)
         mock_tokens = {
             "access_token": "mock_google_access_token_xyz",
             "token_type": "Bearer",
@@ -108,13 +109,32 @@ async def run_google_auth_tests():
             assert cb_res.status_code in (302, 307), f"Expected redirect, got: {cb_res.status_code}"
             assert cb_res.headers["location"] == f"{settings.frontend_url}/app"
             assert "token" in cb_res.cookies
-            print("PASS: /auth/google/callback exchanged code and set auth cookie, redirected to:", cb_res.headers["location"])
+            print("PASS: /auth/google/callback (first login) exchanged code and set auth cookie, redirected to:", cb_res.headers["location"])
 
         # 9. Verify callback user session via /auth/me
         cb_me_res = await ac.get("/auth/me")
         assert cb_me_res.status_code == 200
-        assert cb_me_res.json()["email"] == "oauth.callback.user@example.com"
-        print("PASS: /auth/me recognized OAuth callback user session")
+        first_user = cb_me_res.json()
+        assert first_user["email"] == "oauth.callback.user@example.com"
+        assert first_user["is_oauth"] is True
+        print("PASS: /auth/me recognized OAuth callback user session:", first_user)
+
+        # 9b. Second Login with SAME Google Account (Idempotency: No duplicate user)
+        with patch("auth.router.httpx.AsyncClient", return_value=mock_client):
+            cb_res2 = await ac.get(
+                "/auth/google/callback",
+                params={"code": "mock_auth_code_repeat"},
+                follow_redirects=False,
+            )
+            assert cb_res2.status_code in (302, 307)
+            print("PASS: /auth/google/callback (second login) succeeded")
+
+        cb_me_res2 = await ac.get("/auth/me")
+        assert cb_me_res2.status_code == 200
+        second_user = cb_me_res2.json()
+        assert second_user["id"] == first_user["id"]
+        assert second_user["email"] == first_user["email"]
+        print("PASS: Second Google login reused existing user (id=%s) without duplicates" % second_user["id"])
 
         # 10. Callback error handling
         err_cb_res = await ac.get(

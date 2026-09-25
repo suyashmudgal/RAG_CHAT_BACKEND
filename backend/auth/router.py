@@ -404,7 +404,7 @@ async def google_auth(body: GoogleAuthRequest, response: Response):
 
     name = payload.get("name") or email.split("@")[0]
 
-    # Find or create user
+    # Find or create user in SQLite
     db = await get_db()
     try:
         cursor = await db.execute("SELECT * FROM users WHERE email = ?", (email,))
@@ -423,25 +423,39 @@ async def google_auth(body: GoogleAuthRequest, response: Response):
     finally:
         await db.close()
 
+    # Synchronize with Supabase PostgreSQL
+    try:
+        from services.user_sync import ensure_pg_user
+        pg_user = ensure_pg_user(user)
+        user["pg_id"] = pg_user.id
+    except Exception as pg_exc:
+        logger.error("Failed to sync GIS Google user to PostgreSQL: %s", pg_exc)
+
     jwt_token = create_token(user["id"], user["email"])
     _set_token_cookie(response, jwt_token)
 
-    logger.info("Google user authenticated: %s", email)
+    logger.info("Google user authenticated via GIS: %s", email)
     return AuthResponse(
         user=UserResponse(
             id=user["id"],
             name=user["name"],
             email=user["email"],
-            created_at=user["created_at"],
+            created_at=str(user.get("created_at", "")),
+            is_oauth=True,
         ),
         message="Google sign-in successful",
     )
 
 
+@router.get("/google")
 @router.get("/google/login")
 async def google_login():
     """Redirect to Google OAuth consent screen."""
+    logger.info("[GOOGLE OAUTH] Starting authorization")
+    logger.info("[GOOGLE OAUTH] Redirect URI: %s", settings.google_redirect_uri)
+
     if not settings.google_client_id:
+        logger.warning("[GOOGLE OAUTH] Authorization failed: Google client ID not configured")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Google authentication is not configured on the server. Please set GOOGLE_CLIENT_ID in .env.",
@@ -462,16 +476,23 @@ async def google_login():
 @router.get("/google/callback")
 async def google_callback(code: str | None = None, error: str | None = None):
     """Handle Google OAuth redirect callback."""
+    logger.info("[GOOGLE OAUTH] Callback reached")
     frontend_app_url = f"{settings.frontend_url}/app"
     frontend_login_url = f"{settings.frontend_url}/login"
 
+    has_code = bool(code)
+    logger.info("[GOOGLE OAUTH] Authorization code received: %s", "YES" if has_code else "NO")
+
     if error or not code:
         err_msg = error or "Authorization code missing"
+        logger.warning("[GOOGLE OAUTH] Callback error: %s (type: OAuthCallbackError)", err_msg)
         return RedirectResponse(url=f"{frontend_login_url}?error={quote_plus(err_msg)}")
 
     if not settings.google_client_id or not settings.google_client_secret:
+        logger.error("[GOOGLE OAUTH] Callback aborted: Google OAuth credentials incomplete in configuration")
         return RedirectResponse(url=f"{frontend_login_url}?error=Google+OAuth+not+fully+configured")
 
+    logger.info("[GOOGLE OAUTH] Exchanging authorization code")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             token_resp = await client.post(
@@ -485,33 +506,61 @@ async def google_callback(code: str | None = None, error: str | None = None):
                 },
             )
             if token_resp.status_code != 200:
-                logger.error("Failed to exchange Google OAuth code: %s", token_resp.text)
+                logger.error(
+                    "[GOOGLE OAUTH] Token exchange successful: NO (status: %s, safe_msg: %s)",
+                    token_resp.status_code,
+                    token_resp.json().get("error_description", "Token exchange failed") if token_resp.headers.get("content-type", "").startswith("application/json") else "Non-JSON response",
+                )
                 return RedirectResponse(url=f"{frontend_login_url}?error=Failed+to+exchange+Google+code")
+
+            logger.info("[GOOGLE OAUTH] Token exchange successful: YES")
             tokens = token_resp.json()
             access_token = tokens.get("access_token")
+
+            if not access_token:
+                logger.error("[GOOGLE OAUTH] Token exchange missing access_token in payload")
+                return RedirectResponse(url=f"{frontend_login_url}?error=Invalid+token+response+from+Google")
 
             userinfo_resp = await client.get(
                 "https://www.googleapis.com/oauth2/v2/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             if userinfo_resp.status_code != 200:
-                logger.error("Failed to fetch Google userinfo: %s", userinfo_resp.text)
+                logger.error("[GOOGLE OAUTH] Google identity received: NO (status: %s)", userinfo_resp.status_code)
                 return RedirectResponse(url=f"{frontend_login_url}?error=Failed+to+fetch+user+profile")
+
             profile = userinfo_resp.json()
+            logger.info("[GOOGLE OAUTH] Google identity received: YES")
     except Exception as exc:
-        logger.error("Error during Google OAuth callback: %s", exc)
+        logger.error(
+            "[GOOGLE OAUTH] OAuth connection error: type=%s, safe_msg=%s",
+            type(exc).__name__,
+            str(exc),
+        )
         return RedirectResponse(url=f"{frontend_login_url}?error=OAuth+connection+error")
 
     email = profile.get("email", "").strip().lower()
+    has_email = bool(email)
+    logger.info("[GOOGLE OAUTH] Google email present: %s", "YES" if has_email else "NO")
+
+    if not has_email:
+        logger.error("[GOOGLE OAUTH] Google profile did not include an email address")
+        return RedirectResponse(url=f"{frontend_login_url}?error=No+email+provided+by+Google")
+
     name = profile.get("name") or email.split("@")[0]
 
+    # Find or create user in SQLite
     db = await get_db()
     try:
         cursor = await db.execute("SELECT * FROM users WHERE email = ?", (email,))
         user_row = await cursor.fetchone()
         if user_row:
+            logger.info("[GOOGLE OAUTH] Existing local user found: YES")
+            logger.info("[GOOGLE OAUTH] Creating local user: NO")
             user = dict(user_row)
         else:
+            logger.info("[GOOGLE OAUTH] Existing local user found: NO")
+            logger.info("[GOOGLE OAUTH] Creating local user: YES")
             cursor = await db.execute(
                 "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
                 (name, email, "oauth:google"),
@@ -523,7 +572,26 @@ async def google_callback(code: str | None = None, error: str | None = None):
     finally:
         await db.close()
 
+    # PostgreSQL synchronization
+    try:
+        from services.user_sync import ensure_pg_user
+        pg_user = ensure_pg_user(user)
+        user["pg_id"] = pg_user.id
+        logger.info("[GOOGLE OAUTH] PostgreSQL sync: SUCCESS")
+    except Exception as pg_exc:
+        logger.error(
+            "[GOOGLE OAUTH] PostgreSQL sync: FAILED (type=%s, safe_msg=%s)",
+            type(pg_exc).__name__,
+            str(pg_exc),
+        )
+
+    # JWT / session creation
     jwt_token = create_token(user["id"], user["email"])
+    logger.info("[GOOGLE OAUTH] JWT/session created: YES")
+
+    # Set httpOnly cookie & redirect to frontend
     redirect = RedirectResponse(url=frontend_app_url, status_code=status.HTTP_302_FOUND)
     _set_token_cookie(redirect, jwt_token)
+    logger.info("[GOOGLE OAUTH] Auth cookie set: YES")
+    logger.info("[GOOGLE OAUTH] Redirecting to frontend")
     return redirect

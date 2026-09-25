@@ -54,9 +54,50 @@ NEGATIVE_PHRASES = [
 
 
 def is_negative_answer(answer: str) -> bool:
-    """Return True if the answer states that the information was not found."""
-    low = answer.lower()
-    return any(p in low for p in NEGATIVE_PHRASES)
+    """Return True only if the answer is a genuine refusal/insufficient information response."""
+    low = answer.lower().strip()
+    if "```" in answer:
+        return False
+
+    low_clean = re.sub(r'[*_`]', '', low)
+
+    absence_patterns = [
+        "couldn't find this information",
+        "could not find this information",
+        "cannot find this information",
+        "can't find this information",
+        "not mentioned in the uploaded documents",
+        "not found in the uploaded documents",
+        "not present in the uploaded documents",
+        "no relevant document context was found",
+        "insufficient information in the uploaded documents",
+        "do not contain any information",
+        "does not contain any information",
+        "do not contain information",
+        "does not contain information",
+        "no information about the monetary cost",
+        "no information about the cost",
+        "no information about",
+        "does not mention the cost",
+        "do not mention the cost",
+        "does not report a dollar amount",
+        "does not report a cost",
+        "does not specify the cost",
+        "do not specify the cost",
+        "don’t have a specific dollar amount",
+        "dont have a specific dollar amount",
+        "cannot be answered or derived",
+    ]
+
+    opening = low_clean[:350]
+    if any(p in opening for p in absence_patterns):
+        if "applying that concept" not in low_clean and "derivation" not in low_clean and "derived" not in low_clean:
+            return True
+
+    if len(low_clean) < 250:
+        return any(p in low_clean for p in NEGATIVE_PHRASES)
+
+    return False
 
 
 def extract_cited_pages(answer: str) -> set[int]:
@@ -72,8 +113,10 @@ def extract_cited_pages(answer: str) -> set[int]:
 
 
 def extract_answer_terms(answer: str) -> set[str]:
-    """Extract informative terms, numbers, and technical tokens from the answer."""
-    clean_ans = re.sub(r'【[^】]*】', ' ', answer)
+    """Extract informative terms and technical tokens from the answer (excluding code blocks)."""
+    # Strip code blocks so generated implementation code does not cause false citation matches!
+    text_without_code = re.sub(r'```[\s\S]*?```', ' ', answer)
+    clean_ans = re.sub(r'【[^】]*】', ' ', text_without_code)
     tokens = re.findall(r'[a-zA-Z0-9_\-\.\=]+', clean_ans.lower())
     terms = set()
     for t in tokens:
@@ -116,7 +159,9 @@ def select_citations(
 
     cited_pages = extract_cited_pages(answer)
     answer_terms = extract_answer_terms(answer)
-    answer_numbers = set(re.findall(r'\b\d+(?:\.\d+)?\b', answer))
+    # Extract numbers only from narrative text (excluding code blocks)
+    text_without_code = re.sub(r'```[\s\S]*?```', ' ', answer)
+    answer_numbers = set(re.findall(r'\b\d+(?:\.\d+)?\b', text_without_code))
 
     # 2. Score and filter chunks
     scored_chunks = []
@@ -177,12 +222,25 @@ def select_citations(
     scored_chunks.sort(key=lambda x: x["alignment_score"], reverse=True)
     top_alignment = scored_chunks[0]["alignment_score"]
 
-    # 3. Apply margin cutoff relative to top score
-    selected_candidates = []
+    # 3. Apply margin cutoff relative to top score while preserving multi-document representations
+    best_per_doc: dict[str, Any] = {}
     for sc in scored_chunks:
+        fn = sc["doc"].metadata.get("filename", "")
+        if fn and (fn not in best_per_doc or sc["alignment_score"] > best_per_doc[fn]["alignment_score"]):
+            best_per_doc[fn] = sc
+
+    selected_candidates = []
+    ans_lower = answer.lower()
+    for sc in scored_chunks:
+        fn = sc["doc"].metadata.get("filename", "")
+        fn_clean = re.sub(r"\.[a-zA-Z0-9]+$", "", fn).lower()
+        doc_mentioned_in_answer = bool(fn and fn.lower() in ans_lower) or any(
+            len(part) >= 4 and part in ans_lower for part in re.split(r"[_\-\s]+", fn_clean)
+        )
+        is_best_for_doc = (best_per_doc.get(fn) is sc) and doc_mentioned_in_answer
         is_close_enough = (top_alignment - sc["alignment_score"]) <= margin
-        if sc["page_cited"] or is_close_enough:
-            if answer_numbers and not sc["has_number_match"] and not sc["page_cited"] and sc["overlap_ratio"] < 0.3:
+        if sc["page_cited"] or is_close_enough or is_best_for_doc:
+            if answer_numbers and not sc["has_number_match"] and not sc["page_cited"] and sc["overlap_ratio"] < 0.3 and not is_best_for_doc:
                 continue
             selected_candidates.append(sc)
 

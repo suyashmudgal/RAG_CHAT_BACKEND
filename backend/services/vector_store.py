@@ -132,6 +132,75 @@ class VectorStore:
             logger.warning("similarity_search_for_user query error: %s", exc)
             return []
 
+    def similarity_search_for_document(
+        self, query: str, user_id: int, document_id: str, top_k: int = 3
+    ) -> list[tuple[Document, float]]:
+        """Return the *top_k* most relevant chunks belonging to *document_id* and *user_id*."""
+        if self._chunk_count <= 0:
+            return []
+
+        try:
+            return self.vectorstore.similarity_search_with_score(
+                query,
+                k=top_k,
+                filter={"$and": [{"user_id": str(user_id)}, {"document_id": document_id}]},
+            )
+        except Exception as exc:
+            logger.warning("similarity_search_for_document query error: %s", exc)
+            return []
+
+    def similarity_search_multi_doc_for_user(
+        self,
+        queries: list[str],
+        user_id: int,
+        document_ids: list[str] | None = None,
+        top_k_per_doc: int = 2,
+        global_top_k: int = 4,
+    ) -> list[tuple[Document, float]]:
+        """Retrieve balanced candidate chunks across specified or all documents for user_id.
+
+        Guarantees that each candidate document is fairly represented without being starved,
+        while maintaining strict user_id isolation.
+        """
+        if self._chunk_count <= 0 or not queries:
+            return []
+
+        # Target documents owned by user_id
+        if document_ids is None:
+            document_ids = [
+                doc["document_id"]
+                for doc in self._doc_metadata.values()
+                if doc.get("user_id") == user_id
+            ]
+
+        if not document_ids:
+            return self.similarity_search_for_user(queries[0], user_id, top_k=global_top_k)
+
+        # Map unique chunk key -> (Document, best_dist)
+        chunk_map: dict[str, tuple[Document, float]] = {}
+
+        for doc_id in document_ids:
+            for q in queries:
+                res = self.similarity_search_for_document(
+                    query=q, user_id=user_id, document_id=doc_id, top_k=top_k_per_doc
+                )
+                for doc, dist in res:
+                    chunk_key = f"{doc_id}_{doc.metadata.get('page_number', 0)}_{hash(doc.page_content[:100])}"
+                    if chunk_key not in chunk_map or dist < chunk_map[chunk_key][1]:
+                        chunk_map[chunk_key] = (doc, dist)
+
+        # Also run global user search for primary query to catch any exceptional chunks
+        if global_top_k > 0:
+            global_res = self.similarity_search_for_user(queries[0], user_id, top_k=global_top_k)
+            for doc, dist in global_res:
+                doc_id = doc.metadata.get("document_id", "unknown")
+                chunk_key = f"{doc_id}_{doc.metadata.get('page_number', 0)}_{hash(doc.page_content[:100])}"
+                if chunk_key not in chunk_map or dist < chunk_map[chunk_key][1]:
+                    chunk_map[chunk_key] = (doc, dist)
+
+        sorted_results = sorted(chunk_map.values(), key=lambda x: x[1])
+        return sorted_results
+
     def get_chunks_by_page(
         self, page_number: int, document_id: str | None = None
     ) -> list[Document]:

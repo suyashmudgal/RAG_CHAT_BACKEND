@@ -3,7 +3,7 @@ import sys
 import time
 import requests
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8001"
 
 def test_e2e():
     print("1. Checking health...")

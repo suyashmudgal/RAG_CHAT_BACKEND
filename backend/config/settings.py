@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # --- Google OAuth ---
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+    google_redirect_uri: str = "http://localhost:8001/auth/google/callback"
     frontend_url: str = "http://localhost:5173"
 
     # --- Database (Supabase PostgreSQL) ---
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = "documents"
 
     # --- Server ---
-    cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://[::1]:5173"
 
     model_config = {
         "env_file": ".env",
