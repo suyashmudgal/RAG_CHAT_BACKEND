@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def extract_pdf(file_path: Path) -> list[Document]:
-    """Load a PDF with PyPDFLoader (one Document per page)."""
+    """Load a PDF with text extraction and visual/chart understanding."""
     from langchain_community.document_loaders import PyPDFLoader
+    from services.visual_extractor import visual_extractor
 
     try:
         loader = PyPDFLoader(str(file_path))
@@ -34,10 +35,20 @@ def extract_pdf(file_path: Path) -> list[Document]:
             continue
         doc.metadata["page_number"] = doc.metadata.get("page", 0) + 1  # 1-indexed
         doc.metadata["source_type"] = "pdf"
+        doc.metadata["content_type"] = "text"
         result.append(doc)
 
+    # Visual extraction (charts, diagrams, visual tables, scanned pages)
+    try:
+        visual_docs = visual_extractor.extract_visuals_from_pdf(file_path, filename=file_path.name)
+        if visual_docs:
+            logger.info("Extracted %d visual knowledge document(s) from %s", len(visual_docs), file_path.name)
+            result.extend(visual_docs)
+    except Exception as vis_err:
+        logger.warning("Visual extraction encountered an error on %s: %s", file_path.name, vis_err)
+
     if not result:
-        raise ValueError("PDF contains no extractable text")
+        raise ValueError("PDF contains no extractable text or visual content")
 
     return result
 

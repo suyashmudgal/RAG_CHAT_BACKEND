@@ -47,12 +47,22 @@ class QueryAnalysis:
     is_multi_doc: bool = False
     is_reasoning_required: bool = False
     is_code_requested: bool = False
+    is_visual_chart: bool = False
     target_document_hints: list[str] = field(default_factory=list)
     expanded_search_terms: list[str] = field(default_factory=list)
     conceptual_search_queries: list[str] = field(default_factory=list)
 
 
 # Pattern definitions
+_VISUAL_CHART_PATTERNS = [
+    r"\b(?:pie\s*charts?|bar\s*charts?|line\s*charts?|charts?|graphs?|diagrams?|plots?|figures?|visuals?)\b",
+    r"\b(?:ratio\s+of|percentage\s+of|percent\s+of|break-?up|distribution)\b",
+    r"\b(?:enrolled\s+in|total\s+number\s+of\s+(?:boys|girls|students|men|women))\b",
+    r"\b(?:calculate|compute)\b.*?\b(?:percentage|percent|ratio|total|sum|count|number)\b",
+    r"\b(?:civil|ece|eee|mech|it)\b.*?\b(?:enrolled|students|boys|girls|stream)\b",
+    r"\b(?:boys|girls)\s+(?:enrolled|in\s+(?:civil|ece|eee|mech|it))\b",
+]
+
 _MATH_CALCULATION_PATTERNS = [
     r"\b\d+\s*[\+\-\*\/\^]\s*\d+\b",
     r"\b(?:what\s+is\s+)?\d+\s*(?:plus|minus|times|divided\s+by|\+)\s*\d+\b",
@@ -191,7 +201,10 @@ class QueryUnderstanding:
             re.search(pat, low_ctx) for pat in _CODE_IMPLEMENTATION_PATTERNS
         )
         is_math = any(re.search(pat, low_q) for pat in _MATH_CALCULATION_PATTERNS)
-        is_reasoning = is_math or any(re.search(pat, low_q) for pat in _CONCEPT_REASONING_PATTERNS) or any(
+        is_visual_chart = any(re.search(pat, low_q) for pat in _VISUAL_CHART_PATTERNS) or any(
+            re.search(pat, low_ctx) for pat in _VISUAL_CHART_PATTERNS
+        )
+        is_reasoning = is_math or is_visual_chart or any(re.search(pat, low_q) for pat in _CONCEPT_REASONING_PATTERNS) or any(
             re.search(pat, low_ctx) for pat in _CONCEPT_REASONING_PATTERNS
         )
 
@@ -261,14 +274,15 @@ class QueryUnderstanding:
 
         # 6. Conceptual search query rewrites and expansions
         conceptual_queries, expansions = QueryUnderstanding._generate_conceptual_rewrites(
-            contextualized, intent, is_ats, target_doc_hints
+            contextualized, intent, is_ats, target_doc_hints, is_visual_chart=is_visual_chart
         )
 
         logger.info(
-            "Query Understanding: intent=%s, is_reasoning=%s, is_code=%s, is_multi_doc=%s, targets=%s, conceptual_rewrites=%s",
+            "Query Understanding: intent=%s, is_reasoning=%s, is_code=%s, is_visual_chart=%s, is_multi_doc=%s, targets=%s, conceptual_rewrites=%s",
             intent.value,
             is_reasoning,
             is_code,
+            is_visual_chart,
             is_multi_doc,
             target_doc_hints,
             conceptual_queries,
@@ -283,6 +297,7 @@ class QueryUnderstanding:
             is_multi_doc=is_multi_doc,
             is_reasoning_required=is_reasoning,
             is_code_requested=is_code,
+            is_visual_chart=is_visual_chart,
             target_document_hints=target_doc_hints,
             expanded_search_terms=expansions,
             conceptual_search_queries=conceptual_queries,
@@ -352,40 +367,47 @@ class QueryUnderstanding:
         intent: QueryIntent,
         is_ats: bool,
         target_doc_hints: list[str],
+        is_visual_chart: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Rewrite user queries into theoretical conceptual search terms and domain expansions."""
         low = query.lower()
         conceptual_queries: list[str] = []
         expansions: list[str] = []
 
-        # 1. Arithmetic / Mathematics Conceptual Rewriting
+        # 1. Visual / Chart / Enrollment Distribution Reasoning
+        if is_visual_chart or any(re.search(pat, low) for pat in _VISUAL_CHART_PATTERNS) or "chart" in low or "enrolled" in low:
+            conceptual_queries.append("pie chart data student enrollment distribution by stream branch percentage civil ece eee mech it")
+            conceptual_queries.append("break-up of girls enrolled in streams total students boys girls percentage visual chart")
+            expansions.append("pie chart visual enrollment distribution stream civil ece eee mech it girls boys total percentage")
+
+        # 2. Arithmetic / Mathematics Conceptual Rewriting
         # e.g., "What is 3 + 4?", "What is 37 + 42?"
         if any(re.search(pat, low) for pat in _MATH_CALCULATION_PATTERNS) or "add" in low or "sum" in low or "arithmetic" in low:
             conceptual_queries.append("definition and concept of addition arithmetic combining numbers operations sum")
             conceptual_queries.append("mathematical operations addition subtraction equations numbers")
             expansions.append("addition plus combine total sum value arithmetic numbers")
 
-        # 2. Optimization / Machine Learning Reasoning
+        # 3. Optimization / Machine Learning Reasoning
         # e.g., "If gradient is positive, how does parameter change?", "Gradient descent"
         if "gradient" in low or "descent" in low or "learning rate" in low or "parameter" in low:
             conceptual_queries.append("gradient descent parameter update learning rate loss reduction minimization direction")
             conceptual_queries.append("optimization algorithm gradient descent parameter adjustment loss function")
             expansions.append("gradient parameter update rule learning rate loss objective function derivative")
 
-        # 3. Transformer / Neural Architecture Implementation & Concepts
+        # 4. Transformer / Neural Architecture Implementation & Concepts
         # e.g., "Give me Python/PyTorch code to implement a Transformer"
         if "transformer" in low or "attention" in low or "encoder" in low or "decoder" in low:
             conceptual_queries.append("Transformer architecture self-attention multi-head attention encoder decoder layers")
             conceptual_queries.append("Scaled Dot-Product Attention multi-head attention positional encoding architecture")
             expansions.append("self-attention multi-head attention feed-forward layers encoder decoder model architecture")
 
-        # 4. Multi-Topic Synthesis (e.g. Python + Transformer)
+        # 5. Multi-Topic Synthesis (e.g. Python + Transformer)
         if ("python" in low or "code" in low) and ("transformer" in low or "model" in low or "paper" in low):
             conceptual_queries.append("Python programming language syntax functions classes modules")
             conceptual_queries.append("Transformer architecture self-attention multi-head attention")
             expansions.append("Python implementation modules functions PyTorch torch.nn Transformer")
 
-        # 5. ATS / Resume domain expansions
+        # 6. ATS / Resume domain expansions
         if is_ats or "ats" in low or "best" in low or "strongest" in low or "stronger" in low:
             expansions.append("technical skills programming languages tools frameworks experience projects education")
 

@@ -14,9 +14,11 @@ langchain-huggingface
 langchain-chroma
 langchain-groq
 
-# ── Document loaders ──────────────────────────────────────────────────────
+# ── Document loaders & OCR ──────────────────────────────────────────────
 pypdf
 docx2txt
+PyMuPDF
+rapidocr-onnxruntime
 
 # ── Embeddings (local) ───────────────────────────────────────────────────
 sentence-transformers>=6.0.0
@@ -33,3 +35,7 @@ aiosqlite
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.9
 alembic>=1.13.0
+
+# ── PDF Export & Math Rendering ──────────────────────────────────────────
+reportlab>=4.0.0
+matplotlib>=3.7.0

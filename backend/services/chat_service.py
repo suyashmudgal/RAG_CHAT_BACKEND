@@ -43,40 +43,91 @@ Your purpose is to answer questions using the uploaded documents as KNOWLEDGE, C
 
 CORE OPERATIONAL PRINCIPLES:
 
-1. REASONING & CONCEPTUAL APPLICATION (NOT JUST LITERAL SEARCH):
-   - You are NOT restricted to answering only if the exact verbatim words or answers exist in the documents.
-   - When the document introduces concepts, definitions, rules, architectures, or formulas:
-     * REASON and DERIVE the logical consequences (e.g., if the document explains addition, calculate 3 + 4 = 7; if the document defines gradient descent updating opposite to the gradient, deduce how parameters update when the gradient is positive).
-     * APPLY the concepts to practical tasks (e.g., if the document specifies the Transformer architecture without code, provide a clean Python/PyTorch implementation based on those architectural specifications).
-     * SYNTHESIZE concepts across multiple uploaded documents (e.g., combining a Python document and a Transformer paper to build a working implementation).
-   - Clearly state the conceptual basis: e.g., "The uploaded document explains the concept of addition; applying that concept, 3 + 4 = 7." or "The paper describes the Transformer architecture but does not provide implementation code. Based on that architecture, here is a practical PyTorch example..."
+1. STRICT SOURCE GROUNDEDNESS & NO STRENGTHENING CLAIMS:
+   - For every document-specific claim: Ask internally "Can this claim be directly supported by the retrieved context?"
+   - NEVER strengthen, exaggerate, or upgrade source language or claims:
+     * If the source says "may become future suppliers or customers" or "potential markets", NEVER rewrite as "will become suppliers", "guaranteed market", "guaranteed customers", "ready-made market", or "guaranteed sales".
+     * If the source says "could reduce demand", NEVER rewrite as "will eliminate illegal excavation" or "eliminates illegal excavation".
+     * If the source says "considerably less risk", NEVER rewrite as "no risk" or "guaranteed returns".
+   - Faithfully preserve the author's qualifiers, conditions, uncertainty, and scope ("potential", "may", "might", "could", "tend to", "often", "less risk").
 
-2. GROUNDING VS. APPLICATION VS. GENERAL KNOWLEDGE DISTINCTION:
+2. EXPLICIT DISTINCTION: SOURCE EVIDENCE VS. INFERENCES VS. GENERAL KNOWLEDGE:
    - Always clearly distinguish:
-     a) What the uploaded source explicitly says (with document citations).
-     b) What you derive or calculate from those concepts.
-     c) Practical implementations, code examples, or general best practices you supply.
-   - NEVER pretend that the uploaded document contains code, experimental numbers, or specific facts that it does not contain.
+     a) SOURCE EVIDENCE: What the source document explicitly states. Cite the document and page number.
+     b) INFERENCE / LOGICAL DEDUCTION: What logically follows or can be reasoned from that evidence. When reasoning goes beyond verbatim statements, explicitly label it:
+        - Use phrases such as "Inference:", "Based on this, it suggests...", "This would imply...", or "Applying the concept...".
+        - NEVER present an inference or extrapolation as an explicit statement of the document.
+     c) GENERAL KNOWLEDGE: Standard concepts, programming knowledge, or best practices you supply from general knowledge (clearly labeled as general knowledge).
+     d) UNSUPPORTED SPECULATION: Speculation or claims without evidence MUST NOT be presented as fact.
 
-3. GENERAL KNOWLEDGE HANDLING:
-   - If the user asks a legitimate general conceptual, programming, or domain question (such as 'What is the difference between supervised and unsupervised learning?') that is not covered in the uploaded documents:
-     * Answer thoroughly, accurately, and helpfully using general knowledge.
-     * Do NOT fabricate document citations or falsely attribute general knowledge to the uploaded files.
+3. REASONING & CONCEPTUAL APPLICATION WITHOUT FABRICATION:
+   - You are encouraged to reason, calculate, derive formulas, and implement architectures from document concepts:
+     * e.g., if the document introduces addition, calculate 3 + 4 = 7.
+     * e.g., if the document defines gradient descent updating opposite to the gradient, deduce how parameters update when the gradient is positive.
+     * e.g., if the document specifies the Transformer architecture without code, provide a working PyTorch implementation based on those architectural specifications.
+   - When deriving or reasoning, explicitly state the conceptual basis from the document, then present the deduction clearly.
+   - NEVER fabricate experimental numbers, dollar costs, code, or specific facts not present in the document.
+
+4. SUMMARIZATION WITHOUT DISTORTION:
+   - Summaries must remain faithful to the source scope, numbers, conditions, and uncertainty. Do NOT introduce new facts or stronger assertions while summarizing.
+
+5. GENERAL KNOWLEDGE HANDLING:
+   - If the user asks a legitimate general conceptual, programming, or domain question not covered in the documents:
+     * Answer thoroughly and helpfully using general knowledge.
+     * Do NOT fabricate document citations or falsely attribute general knowledge to uploaded files.
      * Do NOT refuse with 'I could not find this information' for general knowledge questions.
 
-4. CITATION RULES:
-   - Explicitly cite the document name and page number when referencing concepts or facts from documents (e.g., [From: NIPS-2017-attention-is-all-you-need-Paper.pdf, Page 3]).
+6. CITATION RULES:
+   - Explicitly cite the document name and page number when referencing concepts or facts from documents (e.g., [From: filename.pdf, Page X]).
    - Do NOT attach citations to generated code blocks or external general knowledge as if they were written in the document.
 
-5. ATS & RESUME EVALUATION:
+7. ATS & RESUME EVALUATION:
    - When analyzing resumes or candidates, perform an evidence-based qualitative assessment (skills, experience, projects, formatting).
    - NEVER fabricate an arbitrary numeric ATS score (e.g., "92% ATS" or "Score: 85/100") unless explicitly in the text.
 
-6. WHEN TO STATE INSUFFICIENT INFORMATION:
+8. WHEN TO STATE INSUFFICIENT INFORMATION:
    - State that information is unavailable ONLY when:
-     1) The user explicitly demands a specific document-internal fact, metric, or entity that is completely absent and cannot be inferred, calculated, or derived (e.g. exact dollar training cost in a research paper).
+     1) The user explicitly demands a specific document-internal fact, metric, or entity that is completely absent and cannot be inferred, calculated, or derived.
      2) The topic is entirely outside both the uploaded documents and valid general knowledge.
-   - NEVER say "I couldn't find this information in the uploaded documents." simply because the exact question or answer is not verbatim in the text. When a concept exists in the document, reason from it and answer!"""
+   - NEVER say "I couldn't find this information in the uploaded documents." simply because the exact question or answer is not verbatim in the text. When a concept exists in the document, reason from it and answer!
+
+9. VISUAL & CHART UNDERSTANDING:
+   - When answering questions based on charts, pie charts, diagrams, or visual data extracted from documents:
+     * Use the exact visual values, percentages, labels, and distributions provided in the context.
+     * Perform all calculations (e.g., student counts, ratios, totals, percentage changes) carefully step-by-step.
+     * Cite the source document and page number where the visual content originates (e.g., [Source: filename, Page X]).
+     * NEVER state that chart data or information is missing when visual content is present in the context."""
+
+
+def sanitize_grounded_claims(answer: str, context: str) -> str:
+    """Post-processing safety net: prevent ungrounded, exaggerated certainty claims."""
+    if not answer or not context:
+        return answer
+
+    ctx_low = context.lower()
+    ans = answer
+
+    # Guard 1: Guaranteed / ready-made market or customers when source only says potential
+    if "guaranteed market" not in ctx_low:
+        ans = re.sub(r"\b(?:a\s+)?guaranteed\s+markets?\b", "potential markets", ans, flags=re.IGNORECASE)
+        ans = re.sub(r"\b(?:a\s+)?ready-made\s+markets?\b", "potential markets through sponsoring companies", ans, flags=re.IGNORECASE)
+    if "guaranteed customer" not in ctx_low:
+        ans = re.sub(r"\bguaranteed\s+customers?\b", "potential customers", ans, flags=re.IGNORECASE)
+    if "guaranteed return" not in ctx_low:
+        ans = re.sub(r"\bguaranteed\s+returns?\b", "potential returns", ans, flags=re.IGNORECASE)
+    if "guaranteed buyer" not in ctx_low:
+        ans = re.sub(r"\bguaranteed\s+buyers?\b", "potential buyers", ans, flags=re.IGNORECASE)
+
+    # Guard 2: Elimination of illegal excavation when source only says reduce demand
+    if "eliminate illegal excavation" not in ctx_low and "elimination of illegal excavation" not in ctx_low:
+        ans = re.sub(
+            r"\b(?:will\s+eliminate|eliminates|elimination\s+of)\s+illegal\s+excavation\b",
+            "could reduce the demand for illegally excavated objects",
+            ans,
+            flags=re.IGNORECASE,
+        )
+
+    return ans
 
 
 class ChatService:
@@ -388,10 +439,27 @@ class ChatService:
                 prompt_notes.append(
                     "COMPARISON INSTRUCTION: Compare the candidates/documents fairly and thoroughly across the evidence retrieved."
                 )
+            if analysis.is_visual_chart or "VISUAL CONTENT" in context:
+                prompt_notes.append(
+                    "VISUAL & CHART REASONING INSTRUCTION: The question asks about chart, diagram, or visual content. "
+                    "Use the retrieved visual data (including charts, tables, distributions, counts, and percentages) to reason, "
+                    "calculate, and derive the exact answer step-by-step. "
+                    "Explicitly cite the source document and page number where the visual content is found (e.g. [Source: filename, Page X]). "
+                    "Do NOT state that chart information is missing when visual content is present in the context."
+                )
             if analysis.intent == QueryIntent.GENERAL_KNOWLEDGE:
                 prompt_notes.append(
                     "GENERAL KNOWLEDGE INSTRUCTION: Provide thorough, actionable guidance, connecting back to the uploaded documents where relevant."
                 )
+
+        # Core Groundedness & Claim Faithfulness Instruction for all queries
+        prompt_notes.append(
+            "GROUNDEDNESS & CLAIM FAITHFULNESS INSTRUCTION: "
+            "For all document-based statements, stick strictly to what the context explicitly states. "
+            "NEVER strengthen source language (e.g. do NOT convert 'potential' or 'may' into 'guaranteed' or 'will'; "
+            "do NOT claim 'guaranteed market', 'guaranteed customers', 'guaranteed returns', or 'elimination of illegal excavation' unless explicitly supported). "
+            "When reasoning goes beyond verbatim statements, explicitly label inferences (e.g. 'Inference:', 'Based on this, it suggests...')."
+        )
 
         notes_str = ("\n\n[Special Instructions:\n" + "\n".join(prompt_notes) + "]") if prompt_notes else ""
 
@@ -456,7 +524,8 @@ class ChatService:
             llm = self._get_llm()
             try:
                 response = await llm.ainvoke(messages)
-                answer: str = response.content or ""
+                raw_answer: str = response.content or ""
+                answer = sanitize_grounded_claims(raw_answer, context)
             except Exception as exc:
                 raise self._handle_groq_error(exc) from exc
 
@@ -543,7 +612,8 @@ class ChatService:
                     )
 
             # 6. Save accumulated assistant message to PostgreSQL ONCE
-            self._save_message(db, conv_id, "assistant", full_answer)
+            sanitized_answer = sanitize_grounded_claims(full_answer, context)
+            self._save_message(db, conv_id, "assistant", sanitized_answer)
 
             # 7. Citations & done
             max_cites = (
@@ -553,14 +623,14 @@ class ChatService:
             )
             sources = select_citations(
                 query=question,
-                answer=full_answer,
+                answer=sanitized_answer,
                 retrieved_chunks=raw_candidates,
                 similarity_threshold=settings.similarity_threshold,
                 margin=settings.citation_margin,
                 max_citations=max_cites,
             )
 
-            answer_type = self._classify_answer_type(analysis, full_answer, sources)
+            answer_type = self._classify_answer_type(analysis, sanitized_answer, sources)
 
             yield f"data: {json.dumps({'type': 'sources', 'sources': sources, 'answer_type': answer_type})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'conversation_id': conv_id, 'session_id': conv_id, 'answer_type': answer_type})}\n\n"

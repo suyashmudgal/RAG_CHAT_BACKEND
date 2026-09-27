@@ -239,6 +239,15 @@ def select_citations(
         )
         is_best_for_doc = (best_per_doc.get(fn) is sc) and doc_mentioned_in_answer
         is_close_enough = (top_alignment - sc["alignment_score"]) <= margin
+        has_substantive_support = (
+            sc["page_cited"]
+            or sc["has_number_match"]
+            or sc["overlap_ratio"] >= 0.08
+            or is_best_for_doc
+        )
+        if not has_substantive_support:
+            continue
+
         if sc["page_cited"] or is_close_enough or is_best_for_doc:
             if answer_numbers and not sc["has_number_match"] and not sc["page_cited"] and sc["overlap_ratio"] < 0.3 and not is_best_for_doc:
                 continue

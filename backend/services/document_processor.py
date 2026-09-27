@@ -73,11 +73,14 @@ class DocumentProcessor:
             raise ValueError("No text chunks could be created from the document")
 
         # 4. Build document-level metadata
+        visual_chunk_count = sum(1 for c in chunks if c.metadata.get("content_type") == "visual")
         doc_info = {
             "document_id": document_id,
             "filename": filename,
             "status": "processed",
             "chunk_count": len(chunks),
+            "visual_chunk_count": visual_chunk_count,
+            "has_visual_chunks": visual_chunk_count > 0,
             "upload_time": datetime.now(timezone.utc).isoformat(),
             "file_size": file_path.stat().st_size,
         }
