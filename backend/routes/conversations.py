@@ -27,6 +27,8 @@ from auth.dependencies import get_current_user
 from database.session import SessionLocal, get_db
 from models.database import Conversation, Message
 from models.schemas import (
+    BulkDeleteConversationRequest,
+    BulkDeleteConversationResponse,
     ConversationCreate,
     ConversationDetail,
     ConversationSummary,
@@ -404,6 +406,86 @@ async def export_conversation_pdf(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to export conversation to PDF",
+        ) from exc
+
+
+@router.delete("/conversations/bulk", response_model=BulkDeleteConversationResponse)
+async def bulk_delete_conversations(
+    payload: BulkDeleteConversationRequest,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete multiple conversations and cascade their messages in a single transaction.
+
+    Requirements:
+    1. Authentication required.
+    2. Never accepts user_id from frontend (uses current authenticated user).
+    3. Only deletes conversations owned by current user.
+    4. Messages belonging to these conversations are also deleted (cascade).
+    5. Atomic database transaction — if any ID is invalid or unauthorized, nothing is deleted.
+    6. Returns deleted count and deleted IDs.
+    7. Deduplicates IDs safely.
+    """
+    pg_user_id: int = user["pg_id"]
+
+    # 1. Deduplicate IDs while preserving original order
+    unique_ids = list(dict.fromkeys(payload.conversation_ids))
+    if not unique_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="conversation_ids list must contain at least one valid conversation ID",
+        )
+
+    def _execute_bulk_delete():
+        # Query conversations matching unique_ids and owned by pg_user_id
+        owned_convs = (
+            db.query(Conversation)
+            .filter(
+                Conversation.id.in_(unique_ids),
+                Conversation.user_id == pg_user_id,
+            )
+            .all()
+        )
+
+        owned_ids_set = {c.id for c in owned_convs}
+        missing_or_unauthorized = [cid for cid in unique_ids if cid not in owned_ids_set]
+
+        # Enforce strict ownership & zero partial deletion of unauthorized/missing conversations
+        if missing_or_unauthorized:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more conversations not found or not owned by user",
+            )
+
+        # Delete all verified owned conversations (cascade delete handles messages)
+        deleted_ids_list = []
+        for conv in owned_convs:
+            deleted_ids_list.append(conv.id)
+            db.delete(conv)
+
+        db.commit()
+        return deleted_ids_list
+
+    try:
+        deleted_ids = await asyncio.to_thread(_execute_bulk_delete)
+        return BulkDeleteConversationResponse(
+            deleted_count=len(deleted_ids),
+            deleted_ids=deleted_ids,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to bulk delete conversations for user %d: %s",
+            pg_user_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to bulk delete conversations",
         ) from exc
 
 

@@ -2,11 +2,11 @@
 
 Generates beautifully formatted, multi-page PDFs using ReportLab.
 Features:
-- Full LaTeX mathematics support (inline $...$ and display $$...$$) rendered via matplotlib.mathtext
-- Preserved Markdown: headings, bold, italic, lists, tables, inline code, and citations
-- Safe fenced code blocks: code remains verbatim code, never converted to math
-- Conversation title, timestamp, and message statistics header
-- Distinct user & assistant message bubbles
+- Unicode support: full UTF-8 coverage (currency symbols ₹/€/$, arrows →/←, math ≤/≥/±/×, Greek letters α/β/γ) via bundled DejaVu fonts
+- LaTeX mathematics support (inline $...$ and display $$...$$) rendered via matplotlib.mathtext
+- Strict code block protection: code blocks and inline code remain verbatim code, never converted to math
+- Markdown support: headings (with keepWithNext), bold, italic, bullet/numbered lists, tables (with repeatRows), blockquotes, citations
+- Clean multi-page layout: flowable-based message structure preventing blank gaps or table clipping across pages
 - Two-pass NumberedCanvas for dynamic "Page X of Y" footers
 - Strict privacy: entirely in-memory (BytesIO), all temporary render files cleaned up automatically
 """
@@ -22,11 +22,14 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
+import matplotlib
 from matplotlib import mathtext
 from PIL import Image as PILImage
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     HRFlowable,
@@ -39,6 +42,73 @@ from reportlab.platypus import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Cache font registration status
+_FONTS_REGISTERED = False
+_BODY_FONT = "Helvetica"
+_MONO_FONT = "Courier"
+
+
+def _ensure_unicode_fonts() -> tuple[str, str]:
+    """Ensure DejaVu unicode fonts are registered with ReportLab.
+
+    Returns:
+        tuple[str, str]: (body_font_family_name, mono_font_name)
+    """
+    global _FONTS_REGISTERED, _BODY_FONT, _MONO_FONT
+
+    if _FONTS_REGISTERED:
+        return _BODY_FONT, _MONO_FONT
+
+    try:
+        font_dir = os.path.join(os.path.dirname(matplotlib.__file__), "mpl-data", "fonts", "ttf")
+        if os.path.exists(font_dir):
+            sans_regular = os.path.join(font_dir, "DejaVuSans.ttf")
+            sans_bold = os.path.join(font_dir, "DejaVuSans-Bold.ttf")
+            sans_italic = os.path.join(font_dir, "DejaVuSans-Oblique.ttf")
+            sans_bold_italic = os.path.join(font_dir, "DejaVuSans-BoldOblique.ttf")
+            mono_regular = os.path.join(font_dir, "DejaVuSansMono.ttf")
+            mono_bold = os.path.join(font_dir, "DejaVuSansMono-Bold.ttf")
+
+            if os.path.exists(sans_regular) and os.path.exists(sans_bold):
+                pdfmetrics.registerFont(TTFont("DejaVuSans", sans_regular))
+                pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", sans_bold))
+                pdfmetrics.registerFont(
+                    TTFont("DejaVuSans-Oblique", sans_italic if os.path.exists(sans_italic) else sans_regular)
+                )
+                pdfmetrics.registerFont(
+                    TTFont("DejaVuSans-BoldOblique", sans_bold_italic if os.path.exists(sans_bold_italic) else sans_bold)
+                )
+                pdfmetrics.registerFontFamily(
+                    "DejaVuSans",
+                    normal="DejaVuSans",
+                    bold="DejaVuSans-Bold",
+                    italic="DejaVuSans-Oblique",
+                    boldItalic="DejaVuSans-BoldOblique",
+                )
+                _BODY_FONT = "DejaVuSans"
+
+            if os.path.exists(mono_regular):
+                pdfmetrics.registerFont(TTFont("DejaVuSansMono", mono_regular))
+                pdfmetrics.registerFont(
+                    TTFont("DejaVuSansMono-Bold", mono_bold if os.path.exists(mono_bold) else mono_regular)
+                )
+                pdfmetrics.registerFontFamily(
+                    "DejaVuSansMono",
+                    normal="DejaVuSansMono",
+                    bold="DejaVuSansMono-Bold",
+                    italic="DejaVuSansMono",
+                    boldItalic="DejaVuSansMono-Bold",
+                )
+                _MONO_FONT = "DejaVuSansMono"
+    except Exception as exc:
+        logger.warning("Could not register DejaVu fonts: %s. Using default fonts.", exc)
+        _BODY_FONT = "Helvetica"
+        _MONO_FONT = "Courier"
+    finally:
+        _FONTS_REGISTERED = True
+
+    return _BODY_FONT, _MONO_FONT
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -62,7 +132,9 @@ class NumberedCanvas(canvas.Canvas):
 
     def draw_page_number(self, page_count: int) -> None:
         self.saveState()
-        self.setFont("Helvetica", 9)
+        body_font, _ = _ensure_unicode_fonts()
+        font_to_use = body_font if body_font in pdfmetrics.getRegisteredFontNames() else "Helvetica"
+        self.setFont(font_to_use, 9)
         self.setFillColor(colors.HexColor("#64748B"))
 
         # Footer divider rule
@@ -79,6 +151,43 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
 
+def clean_latex_expr(expr: str) -> str:
+    """Normalize and prepare LaTeX expression for matplotlib mathtext rendering."""
+    clean = expr.strip()
+    if clean.startswith("$$") and clean.endswith("$$"):
+        clean = clean[2:-2].strip()
+    elif clean.startswith("\\[") and clean.endswith("\\]"):
+        clean = clean[2:-2].strip()
+    elif clean.startswith("$") and clean.endswith("$"):
+        clean = clean[1:-1].strip()
+    elif clean.startswith("\\(") and clean.endswith("\\)"):
+        clean = clean[2:-2].strip()
+
+    if not clean:
+        return ""
+
+    # Mathtext supports \leq and \geq, but not \le or \ge
+    clean = re.sub(r"\\le(?![a-zA-Z])", r"\\leq", clean)
+    clean = re.sub(r"\\ge(?![a-zA-Z])", r"\\geq", clean)
+
+    # Normalize unescaped % (TeX treats unescaped % as comments)
+    clean = re.sub(r"(?<!\\)%", r"\%", clean)
+
+    # Common unicode symbols inside math to TeX
+    clean = clean.replace("≤", r"\leq ")
+    clean = clean.replace("≥", r"\geq ")
+    clean = clean.replace("±", r"\pm ")
+    clean = clean.replace("×", r"\times ")
+    clean = clean.replace("→", r"\rightarrow ")
+    clean = clean.replace("←", r"\leftarrow ")
+    clean = clean.replace("≈", r"\approx ")
+    clean = clean.replace("≠", r"\neq ")
+    clean = clean.replace("·", r"\cdot ")
+    clean = clean.replace("•", r"\cdot ")
+
+    return clean
+
+
 def render_latex_to_png(
     expr: str,
     tmp_dir: str,
@@ -87,34 +196,26 @@ def render_latex_to_png(
     max_width_pt: float = 480.0,
 ) -> tuple[str, float, float] | None:
     """Render a LaTeX expression to a PNG image file and return (filepath, width_pt, height_pt).
-    
+
     Uses matplotlib.mathtext for fast, deterministic, server-side math rendering without
     requiring external TeX binaries or browser engines.
     """
     try:
-        clean = expr.strip()
-        # Remove delimiters if present
-        if clean.startswith("$$") and clean.endswith("$$"):
-            clean = clean[2:-2].strip()
-        elif clean.startswith("\\[") and clean.endswith("\\]"):
-            clean = clean[2:-2].strip()
-        elif clean.startswith("$") and clean.endswith("$"):
-            clean = clean[1:-1].strip()
-        elif clean.startswith("\\(") and clean.endswith("\\)"):
-            clean = clean[2:-2].strip()
-
+        clean = clean_latex_expr(expr)
         if not clean:
             return None
-
-        # Normalize unescaped % (TeX treats unescaped % as comments)
-        clean = re.sub(r"(?<!\\)%", r"\%", clean)
 
         tex_str = f"${clean}$"
 
         fd, out_path = tempfile.mkstemp(suffix=".png", dir=tmp_dir)
         os.close(fd)
 
-        mathtext.math_to_image(tex_str, out_path, dpi=dpi, format="png")
+        try:
+            mathtext.math_to_image(tex_str, out_path, dpi=dpi, format="png")
+        except Exception:
+            # Fallback attempt: if expression had \text, translate to \mathrm
+            alt = re.sub(r"\\text\{([^}]+)\}", r"\\mathrm{\1}", clean)
+            mathtext.math_to_image(f"${alt}$", out_path, dpi=dpi, format="png")
 
         with PILImage.open(out_path) as im:
             w_px, h_px = im.size
@@ -138,17 +239,32 @@ def format_inline_markdown_and_math(
     text: str,
     tmp_dir: str,
     dpi: int = 180,
+    mono_font: str = "DejaVuSansMono",
 ) -> str:
-    """Process inline math ($...$ or \\(...\\)) and inline markdown (**bold**, *italic*, `code`, citations)."""
+    """Process inline markdown, inline code, and inline math with strict code protection."""
     if not text:
         return ""
 
+    # STEP 1: PROTECT INLINE CODE (CRITICAL: code must NEVER be parsed as math!)
+    inline_code_map: dict[str, str] = {}
+    code_token_idx = 0
+
+    def protect_inline_code(match: re.Match) -> str:
+        nonlocal code_token_idx
+        token = f"__INLINE_CODE_TOKEN_{code_token_idx}__"
+        inline_code_map[token] = match.group(1)
+        code_token_idx += 1
+        return token
+
+    text = re.sub(r"`([^`\n]+)`", protect_inline_code, text)
+
+    # STEP 2: PROCESS INLINE MATH ($...$ or \(...\)) OUTSIDE CODE
     img_placeholders: dict[str, str] = {}
     img_idx = 0
 
     def math_repl(match: re.Match) -> str:
         nonlocal img_idx
-        math_content = match.group(1).strip()
+        math_content = (match.group(1) or "").strip()
         res = render_latex_to_png(math_content, tmp_dir, dpi=dpi, is_display=False)
         if res:
             out_path, w_pt, h_pt = res
@@ -159,11 +275,11 @@ def format_inline_markdown_and_math(
             return ph
         return match.group(0)
 
-    # 1. Match inline math delimiters: $...$ (not $$) and \(...\)
+    # Inline math delimiters: $...$ (not $$) and \(...\)
     text = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", math_repl, text)
     text = re.sub(r"\\\((.*?)\\\)", math_repl, text)
 
-    # 2. Match unwrapped inline LaTeX commands (e.g. \frac{2}{11}\times60 or \sqrt{x})
+    # Standalone inline LaTeX commands outside code (e.g. \frac{2}{11}\times60 or \sqrt{x})
     def unwrapped_math_repl(match: re.Match) -> str:
         nonlocal img_idx
         math_content = match.group(0).strip()
@@ -183,32 +299,34 @@ def format_inline_markdown_and_math(
         text,
     )
 
-    # 3. Escape HTML
+    # STEP 3: ESCAPE HTML FOR BODY TEXT
     text = html.escape(text)
 
-    # 4. Restore image tags
+    # STEP 4: RESTORE PROTECTED INLINE CODE WITH FORMATTING
+    for token, raw_code in inline_code_map.items():
+        escaped_code = html.escape(raw_code).replace(" ", "&nbsp;")
+        code_tag = f'<font face="{mono_font}" color="#0F172A" backColor="#F1F5F9">&nbsp;{escaped_code}&nbsp;</font>'
+        text = text.replace(token, code_tag)
+
+    # STEP 5: RESTORE MATH IMAGE TAGS
     for ph, tag in img_placeholders.items():
         escaped_ph = html.escape(ph)
         text = text.replace(escaped_ph, tag)
         text = text.replace(ph, tag)
 
-    # 5. Inline markdown formatting
+    # STEP 6: INLINE MARKDOWN FORMATTING
     # Bold **text** or __text__
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
     # Italic *text* or _text_
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text)
-    # Inline code `code`
-    text = re.sub(
-        r"`([^`]+)`",
-        r'<font face="Courier" color="#0F172A" backColor="#F1F5F9">&nbsp;\1&nbsp;</font>',
-        text,
-    )
+    text = re.sub(r"(?<![a-zA-Z0-9_])_([^_]+)_(?![a-zA-Z0-9_])", r"<i>\1</i>", text)
     # Citations like [From: ...] or [Source: ...]
     text = re.sub(
-        r"\[(From:[^\]]+|Source:[^\]]+)\]",
+        r"\[((?:From|Source):[^\]]+)\]",
         r'<font color="#2563EB"><b>[\1]</b></font>',
         text,
+        flags=re.IGNORECASE,
     )
 
     return text.replace("\n", "<br/>")
@@ -219,6 +337,8 @@ def parse_message_to_flowables(
     tmp_dir: str,
     body_style: ParagraphStyle,
     content_width: float,
+    body_font: str = "DejaVuSans",
+    mono_font: str = "DejaVuSansMono",
 ) -> list:
     """Parse a message's content into rich ReportLab flowables supporting Math, Code, Tables, and Markdown."""
     if not content or not content.strip():
@@ -226,21 +346,22 @@ def parse_message_to_flowables(
 
     flowables = []
 
-    # 1. Protect Fenced Code Blocks (Code must remain code!)
+    # 1. Protect Fenced Code Blocks (Code must remain verbatim code!)
     code_blocks: dict[str, tuple[str, str]] = {}
     code_idx = 0
 
     def code_repl(match: re.Match) -> str:
         nonlocal code_idx
-        lang = match.group(1).strip()
+        lang = (match.group(1) or "").strip()
         code_text = match.group(2)
-        ph = f"__CODE_BLOCK_{code_idx}__"
+        ph = f"__FENCED_CODE_BLOCK_{code_idx}__"
         code_blocks[ph] = (lang, code_text)
         code_idx += 1
         return f"\n\n{ph}\n\n"
 
+    # Match fenced code blocks (with or without trailing newline)
     processed_content = re.sub(
-        r"```([a-zA-Z0-9_\-\+]*)\r?\n(.*?)\r?\n```",
+        r"```([a-zA-Z0-9_\-\+\#]*)[ \t]*\r?\n(.*?)\r?\n?```",
         code_repl,
         content,
         flags=re.DOTALL,
@@ -252,20 +373,24 @@ def parse_message_to_flowables(
 
     def display_math_repl(match: re.Match) -> str:
         nonlocal math_idx
-        m_expr = match.group(1).strip()
-        ph = f"__DISPLAY_MATH_{math_idx}__"
+        m_expr = (match.group(1) if match.group(1) is not None else match.group(2)).strip()
+        ph = f"__DISPLAY_MATH_BLOCK_{math_idx}__"
         display_math_blocks[ph] = m_expr
         math_idx += 1
         return f"\n\n{ph}\n\n"
 
-    processed_content = re.sub(r"\$\$(.*?)\$\$", display_math_repl, processed_content, flags=re.DOTALL)
-    processed_content = re.sub(r"\\\[(.*?)\\\]", display_math_repl, processed_content, flags=re.DOTALL)
+    processed_content = re.sub(
+        r"\$\$(.*?)\$\$|\\\[(.*?)\\\]",
+        display_math_repl,
+        processed_content,
+        flags=re.DOTALL,
+    )
 
-    # Standalone LaTeX lines (e.g. lines starting with \frac, \text, etc.)
+    # Standalone LaTeX lines (lines starting with \frac, \sqrt, \text, \mathrm)
     def standalone_math_line(match: re.Match) -> str:
         nonlocal math_idx
         line = match.group(0).strip()
-        ph = f"__DISPLAY_MATH_{math_idx}__"
+        ph = f"__DISPLAY_MATH_BLOCK_{math_idx}__"
         display_math_blocks[ph] = line
         math_idx += 1
         return f"\n\n{ph}\n\n"
@@ -277,7 +402,7 @@ def parse_message_to_flowables(
         flags=re.MULTILINE,
     )
     processed_content = re.sub(
-        r"^\s*(\\text\{[^}]+\}[^\n]*)\s*$",
+        r"^\s*(\\(?:text|mathrm)\{[^}]+\}[^\n]*)\s*$",
         standalone_math_line,
         processed_content,
         flags=re.MULTILINE,
@@ -322,11 +447,9 @@ def parse_message_to_flowables(
     # 4. Process Blocks
     blocks = [b.strip() for b in re.split(r"\n\s*\n", processed_content) if b.strip()]
 
-    inner_width = content_width - 24.0
-
     code_style = ParagraphStyle(
         "CodeText",
-        fontName="Courier",
+        fontName=mono_font,
         fontSize=8.5,
         leading=11.5,
         textColor=colors.HexColor("#0F172A"),
@@ -334,43 +457,71 @@ def parse_message_to_flowables(
     h1_style = ParagraphStyle(
         "H1Style",
         parent=body_style,
-        fontName="Helvetica-Bold",
+        fontName=f"{body_font}-Bold" if f"{body_font}-Bold" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Bold",
         fontSize=13,
         leading=16,
         textColor=colors.HexColor("#0F172A"),
-        spaceBefore=4,
+        spaceBefore=6,
         spaceAfter=4,
+        keepWithNext=True,
     )
     h2_style = ParagraphStyle(
         "H2Style",
         parent=body_style,
-        fontName="Helvetica-Bold",
+        fontName=f"{body_font}-Bold" if f"{body_font}-Bold" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Bold",
         fontSize=11,
         leading=14,
         textColor=colors.HexColor("#1E293B"),
-        spaceBefore=3,
+        spaceBefore=5,
         spaceAfter=3,
+        keepWithNext=True,
     )
     h3_style = ParagraphStyle(
         "H3Style",
         parent=body_style,
-        fontName="Helvetica-Bold",
+        fontName=f"{body_font}-Bold" if f"{body_font}-Bold" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Bold",
         fontSize=10,
         leading=13,
         textColor=colors.HexColor("#334155"),
-        spaceBefore=2,
+        spaceBefore=4,
         spaceAfter=2,
+        keepWithNext=True,
+    )
+    blockquote_style = ParagraphStyle(
+        "BlockquoteStyle",
+        parent=body_style,
+        fontName=f"{body_font}-Oblique" if f"{body_font}-Oblique" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Oblique",
+        fontSize=9,
+        leading=13,
+        textColor=colors.HexColor("#475569"),
+    )
+    table_header_style = ParagraphStyle(
+        "TblHeader",
+        parent=body_style,
+        fontName=f"{body_font}-Bold" if f"{body_font}-Bold" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Bold",
+        fontSize=8.5,
+        leading=11.5,
+        textColor=colors.HexColor("#0F172A"),
+    )
+    table_cell_style = ParagraphStyle(
+        "TblCell",
+        parent=body_style,
+        fontName=body_font,
+        fontSize=8.5,
+        leading=11.5,
+        textColor=colors.HexColor("#334155"),
     )
 
     for b in blocks:
         # Check Code Block
         if b in code_blocks:
             lang, raw_code = code_blocks[b]
+            # Code is literal code! Never converted to math!
             escaped_code = html.escape(raw_code.rstrip())
             formatted_code = escaped_code.replace(" ", "&nbsp;").replace("\n", "<br/>")
 
             code_p = Paragraph(formatted_code, code_style)
-            code_table = Table([[code_p]], colWidths=[inner_width])
+            code_table = Table([[code_p]], colWidths=[content_width])
             code_table.setStyle(
                 TableStyle(
                     [
@@ -397,13 +548,12 @@ def parse_message_to_flowables(
                 tmp_dir,
                 dpi=180,
                 is_display=True,
-                max_width_pt=inner_width - 20,
+                max_width_pt=content_width - 20,
             )
             if res:
                 out_path, w_pt, h_pt = res
                 img = RLImage(out_path, width=w_pt, height=h_pt)
-                # Center using a 1-cell Table
-                center_tbl = Table([[img]], colWidths=[inner_width])
+                center_tbl = Table([[img]], colWidths=[content_width])
                 center_tbl.setStyle(
                     TableStyle(
                         [
@@ -420,8 +570,10 @@ def parse_message_to_flowables(
                 flowables.append(center_tbl)
                 flowables.append(Spacer(1, 3))
             else:
-                clean_expr = html.escape(m_expr).replace("\n", "<br/>")
-                p = Paragraph(f"<b><i>{clean_expr}</i></b>", body_style)
+                # Fallback without leaking raw LaTeX delimiters
+                clean_expr = clean_latex_expr(m_expr)
+                escaped_expr = html.escape(clean_expr).replace("\n", "<br/>")
+                p = Paragraph(f"<b><i>{escaped_expr}</i></b>", body_style)
                 flowables.append(p)
             continue
 
@@ -429,20 +581,39 @@ def parse_message_to_flowables(
         if b in table_blocks:
             tbl_lines = table_blocks[b]
             parsed_rows = []
+            is_header = True
             for tl in tbl_lines:
                 if re.match(r"^\s*\|[-:| ]+\|\s*$", tl):
+                    is_header = False
                     continue  # Separator row
                 cells = [c.strip() for c in tl.strip().strip("|").split("|")]
-                row_flowables = [
-                    Paragraph(format_inline_markdown_and_math(c, tmp_dir), body_style)
-                    for c in cells
-                ]
+                if is_header and not parsed_rows:
+                    row_flowables = [
+                        Paragraph(
+                            format_inline_markdown_and_math(c, tmp_dir, mono_font=mono_font),
+                            table_header_style,
+                        )
+                        for c in cells
+                    ]
+                else:
+                    row_flowables = [
+                        Paragraph(
+                            format_inline_markdown_and_math(c, tmp_dir, mono_font=mono_font),
+                            table_cell_style,
+                        )
+                        for c in cells
+                    ]
                 parsed_rows.append(row_flowables)
 
             if parsed_rows:
                 num_cols = max(len(r) for r in parsed_rows)
-                col_w = inner_width / max(num_cols, 1)
-                tbl = Table(parsed_rows, colWidths=[col_w] * num_cols)
+                # Normalize row length
+                for r in parsed_rows:
+                    while len(r) < num_cols:
+                        r.append(Paragraph("", table_cell_style))
+
+                col_w = content_width / max(num_cols, 1)
+                tbl = Table(parsed_rows, colWidths=[col_w] * num_cols, repeatRows=1)
                 tbl.setStyle(
                     TableStyle(
                         [
@@ -452,7 +623,7 @@ def parse_message_to_flowables(
                             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                             ("LEFTPADDING", (0, 0), (-1, -1), 6),
                             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ]
                     )
                 )
@@ -461,17 +632,42 @@ def parse_message_to_flowables(
                 flowables.append(Spacer(1, 4))
             continue
 
+        # Check Blockquote
+        if b.startswith(">"):
+            quote_lines = [re.sub(r"^>\s?", "", l) for l in b.split("\n")]
+            quote_text = format_inline_markdown_and_math(
+                "\n".join(quote_lines), tmp_dir, mono_font=mono_font
+            )
+            quote_p = Paragraph(quote_text, blockquote_style)
+            quote_table = Table([[quote_p]], colWidths=[content_width])
+            quote_table.setStyle(
+                TableStyle(
+                    [
+                        ("LINELEFT", (0, 0), (0, -1), 2.5, colors.HexColor("#94A3B8")),
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            flowables.append(Spacer(1, 2))
+            flowables.append(quote_table)
+            flowables.append(Spacer(1, 2))
+            continue
+
         # Headings
         if b.startswith("# "):
-            h_text = format_inline_markdown_and_math(b[2:].strip(), tmp_dir)
+            h_text = format_inline_markdown_and_math(b[2:].strip(), tmp_dir, mono_font=mono_font)
             flowables.append(Paragraph(h_text, h1_style))
             flowables.append(Spacer(1, 2))
         elif b.startswith("## "):
-            h_text = format_inline_markdown_and_math(b[3:].strip(), tmp_dir)
+            h_text = format_inline_markdown_and_math(b[3:].strip(), tmp_dir, mono_font=mono_font)
             flowables.append(Paragraph(h_text, h2_style))
             flowables.append(Spacer(1, 2))
         elif b.startswith("### "):
-            h_text = format_inline_markdown_and_math(b[4:].strip(), tmp_dir)
+            h_text = format_inline_markdown_and_math(b[4:].strip(), tmp_dir, mono_font=mono_font)
             flowables.append(Paragraph(h_text, h3_style))
             flowables.append(Spacer(1, 2))
         else:
@@ -486,21 +682,25 @@ def parse_message_to_flowables(
                     m_bullet = re.match(r"^\s*([\*\-\+])\s+(.+)$", line_s)
                     m_num = re.match(r"^\s*(\d+\.)\s+(.+)$", line_s)
                     if m_bullet:
-                        item_text = format_inline_markdown_and_math(m_bullet.group(2), tmp_dir)
+                        item_text = format_inline_markdown_and_math(
+                            m_bullet.group(2), tmp_dir, mono_font=mono_font
+                        )
                         formatted_line = f"&nbsp;&nbsp;&bull;&nbsp;&nbsp;{item_text}"
                         flowables.append(Paragraph(formatted_line, body_style))
                         flowables.append(Spacer(1, 1.5))
                     elif m_num:
-                        item_text = format_inline_markdown_and_math(m_num.group(2), tmp_dir)
+                        item_text = format_inline_markdown_and_math(
+                            m_num.group(2), tmp_dir, mono_font=mono_font
+                        )
                         formatted_line = f"&nbsp;&nbsp;<b>{m_num.group(1)}</b>&nbsp;&nbsp;{item_text}"
                         flowables.append(Paragraph(formatted_line, body_style))
                         flowables.append(Spacer(1, 1.5))
                     else:
-                        line_text = format_inline_markdown_and_math(line_s, tmp_dir)
+                        line_text = format_inline_markdown_and_math(line_s, tmp_dir, mono_font=mono_font)
                         flowables.append(Paragraph(line_text, body_style))
                         flowables.append(Spacer(1, 1.5))
             else:
-                p_text = format_inline_markdown_and_math(b, tmp_dir)
+                p_text = format_inline_markdown_and_math(b, tmp_dir, mono_font=mono_font)
                 flowables.append(Paragraph(p_text, body_style))
                 flowables.append(Spacer(1, 3))
 
@@ -534,13 +734,16 @@ def generate_conversation_pdf(
 
     content_width = letter[0] - 80.0  # 612 - 80 = 532 pt
 
+    # Ensure Unicode font family is registered
+    body_font, mono_font = _ensure_unicode_fonts()
+    bold_font = f"{body_font}-Bold" if f"{body_font}-Bold" in pdfmetrics.getRegisteredFontNames() else "Helvetica-Bold"
+
     styles = getSampleStyleSheet()
 
-    # Custom typography styles
     title_style = ParagraphStyle(
         "ExportTitle",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=bold_font,
         fontSize=18,
         leading=22,
         textColor=colors.HexColor("#0F172A"),
@@ -548,7 +751,7 @@ def generate_conversation_pdf(
     meta_style = ParagraphStyle(
         "ExportMeta",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=body_font,
         fontSize=9,
         leading=13,
         textColor=colors.HexColor("#475569"),
@@ -556,34 +759,40 @@ def generate_conversation_pdf(
     user_header_style = ParagraphStyle(
         "UserHeader",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=bold_font,
         fontSize=10,
         leading=14,
         textColor=colors.HexColor("#1E3A8A"),  # Blue 900
+        keepWithNext=True,
     )
     user_body_style = ParagraphStyle(
         "UserBody",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=body_font,
         fontSize=9.5,
         leading=14,
         textColor=colors.HexColor("#0F172A"),
+        leftIndent=10,
+        rightIndent=10,
     )
     assistant_header_style = ParagraphStyle(
         "AssistantHeader",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=bold_font,
         fontSize=10,
         leading=14,
         textColor=colors.HexColor("#3730A3"),  # Indigo 800
+        keepWithNext=True,
     )
     assistant_body_style = ParagraphStyle(
         "AssistantBody",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=body_font,
         fontSize=9.5,
         leading=14,
         textColor=colors.HexColor("#1E293B"),
+        leftIndent=10,
+        rightIndent=10,
     )
 
     story = []
@@ -630,64 +839,64 @@ def generate_conversation_pdf(
                 if "T" in msg_time:
                     msg_time = msg_time.replace("T", " ")[:19]
 
-                if role == "user":
-                    header_text = f"User ({msg_time})" if msg_time else "User"
-                    msg_flowables = parse_message_to_flowables(
-                        content=content,
-                        tmp_dir=tmp_dir,
-                        body_style=user_body_style,
-                        content_width=content_width,
-                    )
-                    cell_content = [
-                        Paragraph(f"<b>{header_text}</b>", user_header_style),
-                        Spacer(1, 4),
-                        *msg_flowables,
-                    ]
-                    bubble_table = Table([[cell_content]], colWidths=[content_width])
-                    bubble_table.setStyle(
-                        TableStyle(
-                            [
-                                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F1F5F9")),
-                                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#CBD5E1")),
-                                ("ROUNDEDCORNERS", [4, 4, 4, 4]),
-                                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                            ]
-                        )
-                    )
-                else:
-                    header_text = f"DocChat Assistant ({msg_time})" if msg_time else "DocChat Assistant"
-                    msg_flowables = parse_message_to_flowables(
-                        content=content,
-                        tmp_dir=tmp_dir,
-                        body_style=assistant_body_style,
-                        content_width=content_width,
-                    )
-                    cell_content = [
-                        Paragraph(f"<b>{header_text}</b>", assistant_header_style),
-                        Spacer(1, 4),
-                        *msg_flowables,
-                    ]
-                    bubble_table = Table([[cell_content]], colWidths=[content_width])
-                    bubble_table.setStyle(
-                        TableStyle(
-                            [
-                                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFFFFF")),
-                                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#E2E8F0")),
-                                ("LINELEFT", (0, 0), (0, -1), 3.0, colors.HexColor("#4F46E5")),
-                                ("ROUNDEDCORNERS", [4, 4, 4, 4]),
-                                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                            ]
-                        )
-                    )
+                is_user = role == "user"
+                header_title = "User" if is_user else "DocChat Assistant"
+                header_style = user_header_style if is_user else assistant_header_style
+                body_style = user_body_style if is_user else assistant_body_style
+                badge_bg = colors.HexColor("#EFF6FF") if is_user else colors.HexColor("#EEF2FF")
+                border_color = colors.HexColor("#3B82F6") if is_user else colors.HexColor("#6366F1")
 
-                story.append(bubble_table)
-                story.append(Spacer(1, 8))
+                # Compact, un-splittable message header bar
+                header_p = Paragraph(f"<b>{header_title}</b>", header_style)
+                time_p = Paragraph(
+                    f'<font color="#64748B">{msg_time}</font>' if msg_time else "",
+                    meta_style,
+                )
+                header_bar = Table(
+                    [[header_p, time_p]],
+                    colWidths=[content_width - 150, 150],
+                )
+                header_bar.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), badge_bg),
+                            ("LINELEFT", (0, 0), (0, -1), 3.0, border_color),
+                            ("ROUNDEDCORNERS", [3, 3, 3, 3]),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ]
+                    )
+                )
+
+                story.append(header_bar)
+                story.append(Spacer(1, 4))
+
+                # Parse message body into individual flowables (enables natural multi-page flow)
+                msg_flowables = parse_message_to_flowables(
+                    content=content,
+                    tmp_dir=tmp_dir,
+                    body_style=body_style,
+                    content_width=content_width,
+                    body_font=body_font,
+                    mono_font=mono_font,
+                )
+                story.extend(msg_flowables)
+
+                # Message divider
+                if idx < len(messages) - 1:
+                    story.append(
+                        HRFlowable(
+                            width="100%",
+                            thickness=0.5,
+                            color=colors.HexColor("#E2E8F0"),
+                            spaceBefore=6,
+                            spaceAfter=8,
+                        )
+                    )
 
         doc.build(story, canvasmaker=NumberedCanvas)
 

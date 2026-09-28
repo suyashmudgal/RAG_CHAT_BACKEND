@@ -157,6 +157,36 @@ class ConversationDetail(BaseModel):
     messages: list[MessageItem]
 
 
+# ── Bulk Operations ─────────────────────────────────────────────────────────
+
+class BulkDeleteConversationRequest(BaseModel):
+    """Request payload for bulk conversation deletion."""
+
+    conversation_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="List of conversation IDs to delete (1 to 100 IDs)",
+    )
+
+    @field_validator("conversation_ids")
+    @classmethod
+    def validate_conversation_ids(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("conversation_ids cannot be empty")
+        cleaned = [cid.strip() for cid in v if isinstance(cid, str) and cid.strip()]
+        if not cleaned:
+            raise ValueError("conversation_ids must contain at least one valid non-empty ID")
+        return cleaned
+
+
+class BulkDeleteConversationResponse(BaseModel):
+    """Response payload for bulk conversation deletion."""
+
+    deleted_count: int
+    deleted_ids: list[str]
+
+
 # ── Errors ──────────────────────────────────────────────────────────────────
 
 class ErrorResponse(BaseModel):
@@ -164,3 +194,4 @@ class ErrorResponse(BaseModel):
 
     detail: str
     error_code: Optional[str] = None
+
