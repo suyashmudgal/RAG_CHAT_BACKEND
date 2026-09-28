@@ -62,7 +62,7 @@ flowchart TD
     Chunker -->|Batch Size 32| Chroma
     Progress -->|Status Sync| PG
 
-    UI -->|User Question (SSE Stream)| R_Chat
+    UI -->|"User Question (SSE Stream)"| R_Chat
     R_Chat --> QU
     QU --> BalRet
     BalRet --> Chroma
