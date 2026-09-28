@@ -139,20 +139,20 @@ class ChatService:
 
     # ── LLM initialisation ──────────────────────────────────────────────
 
-    def _get_llm(self) -> ChatGroq:
+    def _get_llm(self, model_name: str | None = None) -> ChatGroq:
         if not settings.groq_api_key:
             raise ValueError(
                 "GROQ_API_KEY is not set. Please add it to your .env file. "
                 "Get a free key at https://console.groq.com/keys"
             )
-        if self._llm is None:
-            self._llm = ChatGroq(
-                model=settings.groq_model,
-                api_key=settings.groq_api_key,
-                temperature=0.3,
-                max_tokens=2048,
-            )
-        return self._llm
+        target_model = model_name or settings.groq_model
+        return ChatGroq(
+            model=target_model,
+            api_key=settings.groq_api_key,
+            temperature=0.3,
+            max_tokens=2048,
+            max_retries=1,
+        )
 
     # ── Conversation & Memory Persistence ───────────────────────────────
 
@@ -359,14 +359,15 @@ class ChatService:
             results = self.vector_store.similarity_search_for_user(
                 analysis.contextualized_query, user_id, top_k=settings.retrieval_top_k
             )
+            candidates = list(results)
             top_sim = distance_to_similarity(results[0][1]) if results else 0.0
-            if (not results or top_sim < 0.20 or analysis.is_code_requested or analysis.is_reasoning_required) and len(search_queries) > 1:
+            if len(search_queries) > 1:
                 # Adaptive conceptual retrieval: supplement with conceptual query rewrites
                 extra = self.vector_store.similarity_search_multi_doc_for_user(
                     queries=search_queries[1:4],
                     user_id=user_id,
-                    top_k_per_doc=2,
-                    global_top_k=2,
+                    top_k_per_doc=4,
+                    global_top_k=4,
                 )
                 chunk_map: dict[str, tuple[Document, float]] = {}
                 for doc, dist in results + extra:
@@ -374,8 +375,28 @@ class ChatService:
                     if ck not in chunk_map or dist < chunk_map[ck][1]:
                         chunk_map[ck] = (doc, dist)
                 candidates = sorted(chunk_map.values(), key=lambda x: x[1])
-            else:
-                candidates = results
+        # Same-page context enrichment:
+        # If candidates include a visual chart or table from page P of doc D,
+        # fetch the text chunk from the same page P so base totals, directions, and questions are present.
+        if user_id is not None and candidates:
+            seen_doc_pages = {
+                (c[0].metadata.get("document_id"), c[0].metadata.get("page_number"))
+                for c in candidates[:3]
+                if c[0].metadata.get("content_type") in ["visual", "table"]
+            }
+            for doc_id, p_num in seen_doc_pages:
+                if doc_id and p_num and int(p_num) > 0:
+                    try:
+                        matches = self.vector_store.vectorstore.similarity_search_with_score(
+                            f"page {p_num} text directions questions",
+                            k=2,
+                            filter={"$and": [{"user_id": str(user_id)}, {"document_id": doc_id}, {"page_number": int(p_num)}]},
+                        )
+                        for pm_doc, pm_dist in matches:
+                            if pm_doc.metadata.get("content_type") != "visual" and not any(pm_doc.page_content == c[0].page_content for c in candidates):
+                                candidates.append((pm_doc, pm_dist + 0.05))
+                    except Exception:
+                        pass
 
         if not candidates:
             return "", [], analysis
@@ -387,11 +408,14 @@ class ChatService:
         for doc, _dist in final_candidates:
             filename = doc.metadata.get("filename", "Unknown")
             page = doc.metadata.get("page_number", 0)
+            elem_type = doc.metadata.get("element_type") or doc.metadata.get("content_type", "TEXT").upper()
             text = doc.page_content
 
             header = f"[From: {filename}"
             if page and int(page) > 0:
                 header += f", Page {page}"
+            if elem_type and elem_type != "TEXT":
+                header += f", Element: {elem_type}"
             header += "]"
             context_parts.append(f"{header}\n{text}")
 
@@ -520,14 +544,24 @@ class ChatService:
             )
             messages = self._build_messages(question, context, history, analysis)
 
-            # 5. Invoke LLM
-            llm = self._get_llm()
-            try:
-                response = await llm.ainvoke(messages)
-                raw_answer: str = response.content or ""
-                answer = sanitize_grounded_claims(raw_answer, context)
-            except Exception as exc:
-                raise self._handle_groq_error(exc) from exc
+            # 5. Invoke LLM with resilient multi-model fallback
+            fallback_models = list(dict.fromkeys([settings.groq_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]))
+            response = None
+            last_exc = None
+            for m in fallback_models:
+                try:
+                    llm = self._get_llm(model_name=m)
+                    response = await llm.ainvoke(messages)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("Groq model %s invocation failed: %s. Trying next fallback...", m, exc)
+
+            if response is None:
+                raise self._handle_groq_error(last_exc) from last_exc
+
+            raw_answer: str = response.content or ""
+            answer = sanitize_grounded_claims(raw_answer, context)
 
             # 6. Save assistant response to PostgreSQL
             self._save_message(db, conv_id, "assistant", answer)
@@ -599,11 +633,24 @@ class ChatService:
             )
             messages = self._build_messages(question, context, history, analysis)
 
-            # 5. Stream LLM tokens
-            llm = self._get_llm()
-            full_answer = ""
+            # 5. Stream LLM tokens with resilient fallback
+            fallback_models = list(dict.fromkeys([settings.groq_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]))
+            stream_gen = None
+            last_exc = None
+            for m in fallback_models:
+                try:
+                    llm = self._get_llm(model_name=m)
+                    stream_gen = llm.astream(messages)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("Groq streaming with %s failed: %s. Trying next fallback...", m, exc)
 
-            async for chunk in llm.astream(messages):
+            if stream_gen is None:
+                raise self._handle_groq_error(last_exc) from last_exc
+
+            full_answer = ""
+            async for chunk in stream_gen:
                 token = chunk.content
                 if token:
                     full_answer += token

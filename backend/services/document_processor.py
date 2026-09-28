@@ -124,3 +124,40 @@ class DocumentProcessor:
             "chunk_count": len(chunks),
             "message": f"Successfully processed {filename}",
         }
+
+    def get_document_diagnostics(self, file_path: Path) -> dict[str, Any]:
+        """Diagnostic capability for inspection and debugging (Phase 19)."""
+        documents = extract_text(file_path)
+        chunks = self.chunker.chunk_documents(documents)
+
+        page_numbers = {
+            doc.metadata.get("page_number")
+            for doc in documents
+            if doc.metadata.get("page_number")
+        }
+
+        element_counts: dict[str, int] = {}
+        for doc in documents:
+            e_type = doc.metadata.get("element_type") or doc.metadata.get("content_type", "text")
+            element_counts[e_type] = element_counts.get(e_type, 0) + 1
+
+        visual_pages = {
+            doc.metadata.get("page_number")
+            for doc in documents
+            if doc.metadata.get("content_type") == "visual"
+        }
+        table_pages = {
+            doc.metadata.get("page_number")
+            for doc in documents
+            if doc.metadata.get("content_type") == "table"
+        }
+
+        return {
+            "filename": file_path.name,
+            "page_count": max(page_numbers) if page_numbers else len(documents),
+            "total_extracted_elements": len(documents),
+            "element_breakdown": element_counts,
+            "pages_with_visuals": sorted(list(visual_pages)),
+            "pages_with_tables": sorted(list(table_pages)),
+            "total_chunks_created": len(chunks),
+        }

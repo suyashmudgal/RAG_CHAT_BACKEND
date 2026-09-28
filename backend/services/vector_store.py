@@ -170,7 +170,7 @@ class VectorStore:
             document_ids = [
                 doc["document_id"]
                 for doc in self._doc_metadata.values()
-                if doc.get("user_id") == user_id
+                if str(doc.get("user_id")) == str(user_id)
             ]
 
         if not document_ids:
@@ -284,7 +284,7 @@ class VectorStore:
         """Return metadata only for documents owned by *user_id*."""
         return [
             doc for doc in self._doc_metadata.values()
-            if doc.get("user_id") == user_id
+            if str(doc.get("user_id")) == str(user_id)
         ]
 
     def get_document_info(self, document_id: str) -> dict[str, Any] | None:

@@ -281,6 +281,7 @@ def select_citations(
             "document_id": doc.metadata.get("document_id", ""),
             "chunk_id": chunk_id,
             "relevance_score": round(sc["sim"], 2),
+            "element_type": doc.metadata.get("element_type") or doc.metadata.get("content_type", "text"),
         })
 
     citation_details = [

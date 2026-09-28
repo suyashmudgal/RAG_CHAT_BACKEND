@@ -56,11 +56,10 @@ class QueryAnalysis:
 # Pattern definitions
 _VISUAL_CHART_PATTERNS = [
     r"\b(?:pie\s*charts?|bar\s*charts?|line\s*charts?|charts?|graphs?|diagrams?|plots?|figures?|visuals?)\b",
-    r"\b(?:ratio\s+of|percentage\s+of|percent\s+of|break-?up|distribution)\b",
-    r"\b(?:enrolled\s+in|total\s+number\s+of\s+(?:boys|girls|students|men|women))\b",
-    r"\b(?:calculate|compute)\b.*?\b(?:percentage|percent|ratio|total|sum|count|number)\b",
-    r"\b(?:civil|ece|eee|mech|it)\b.*?\b(?:enrolled|students|boys|girls|stream)\b",
-    r"\b(?:boys|girls)\s+(?:enrolled|in\s+(?:civil|ece|eee|mech|it))\b",
+    r"\b(?:ratio\s+of|percentage\s+of|percent\s+of|break-?up|distribution|proportion|share)\b",
+    r"\b(?:enrolled\s+in|total\s+number\s+of\s+[A-Za-z]+)\b",
+    r"\b(?:calculate|compute)\b.*?\b(?:percentage|percent|ratio|total|sum|count|number|difference)\b",
+    r"\b(?:highest|lowest|maximum|minimum|increase|decrease)\s+(?:percentage|share|ratio|number|count)\b",
 ]
 
 _MATH_CALCULATION_PATTERNS = [
@@ -374,11 +373,17 @@ class QueryUnderstanding:
         conceptual_queries: list[str] = []
         expansions: list[str] = []
 
-        # 1. Visual / Chart / Enrollment Distribution Reasoning
-        if is_visual_chart or any(re.search(pat, low) for pat in _VISUAL_CHART_PATTERNS) or "chart" in low or "enrolled" in low:
-            conceptual_queries.append("pie chart data student enrollment distribution by stream branch percentage civil ece eee mech it")
-            conceptual_queries.append("break-up of girls enrolled in streams total students boys girls percentage visual chart")
-            expansions.append("pie chart visual enrollment distribution stream civil ece eee mech it girls boys total percentage")
+        # 1. Visual / Chart / Distribution Reasoning (Generic)
+        if is_visual_chart or any(re.search(pat, low) for pat in _VISUAL_CHART_PATTERNS) or "chart" in low or "distribution" in low:
+            key_terms = [
+                w
+                for w in re.findall(r"\b[A-Za-z0-9%]{2,}\b", query)
+                if w.lower() not in {"what", "is", "the", "of", "and", "in", "to", "for", "are", "from", "with", "does", "how", "many"}
+            ]
+            terms_str = " ".join(key_terms)
+            conceptual_queries.append(f"chart visual graph data distribution percentage {terms_str}".strip())
+            conceptual_queries.append(f"breakdown values total count distribution {terms_str}".strip())
+            expansions.append(f"visual content chart table data {terms_str}".strip())
 
         # 2. Arithmetic / Mathematics Conceptual Rewriting
         # e.g., "What is 3 + 4?", "What is 37 + 42?"
@@ -407,7 +412,15 @@ class QueryUnderstanding:
             conceptual_queries.append("Transformer architecture self-attention multi-head attention")
             expansions.append("Python implementation modules functions PyTorch torch.nn Transformer")
 
-        # 6. ATS / Resume domain expansions
+        # 6. Numbered Document Questions / Problems / Items (e.g. "Question 4", "Q15", "Problem 2")
+        q_matches = re.findall(r"\b(?:question|problem|q|item|exercise)\s*(\d+)\b", low)
+        for num in q_matches:
+            conceptual_queries.append(f"{num}. Statements")
+            conceptual_queries.append(f"Question {num}")
+            expansions.append(f"{num}. Statements Conclusions")
+            expansions.append(f"{num}.")
+
+        # 7. ATS / Resume domain expansions
         if is_ats or "ats" in low or "best" in low or "strongest" in low or "stronger" in low:
             expansions.append("technical skills programming languages tools frameworks experience projects education")
 
